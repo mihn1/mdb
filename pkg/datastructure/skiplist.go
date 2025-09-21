@@ -19,6 +19,7 @@ type SkipList struct {
 	maxLevel int
 	mu       sync.RWMutex
 	cmp      Comparator
+	_preds   [][]*slNode // Reusable slice for path tracking when insertion to avoid allocations
 }
 
 type slNode struct {
@@ -52,15 +53,15 @@ func NewSkipList(maxLevel int, cmp Comparator) *SkipList {
 		maxLevel: maxLevel,
 		mu:       sync.RWMutex{},
 		cmp:      cmp,
+		_preds:   make([][]*slNode, maxLevel),
 	}
 }
 
 func (sl *SkipList) Search(key []byte) (any, bool) {
 	sl.mu.RLock()
 	defer sl.mu.RUnlock()
-	path, found := sl.findLessThanOrEqualPath(key)
-	if found {
-		return path[len(path)-1][0].value, true
+	if tower, ok := sl.findEqual(key); ok {
+		return tower[0].value, true
 	}
 	return nil, false
 }
@@ -68,39 +69,44 @@ func (sl *SkipList) Search(key []byte) (any, bool) {
 func (sl *SkipList) Insert(key []byte, value any) error {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
-	path, found := sl.findLessThanOrEqualPath(key)
-	if found {
-		lastTower := path[len(path)-1]
-		// Key already exists, update the value
-		lastTower[0].value = value // Only update value at the lowest level
-		return nil
-	}
-
-	// Insert new tower
-	level := sl.randomLevel()
-	i := 0
-	newTower := make([]*slNode, level)
-
-	for i < level {
-		// Pop the last element from path
-		prevTower := path[len(path)-1]
-		path = path[:len(path)-1]
-		// Insert the new node at this level
-		for _, prevNode := range prevTower[i:] {
-			newNode := &slNode{
-				key:   key,
-				value: value,
-				next:  prevNode.next,
-				level: level,
-			}
-			newTower[i] = newNode
-			prevNode.next = newTower
-			i++
-			if i >= level {
+	// Find predecessors for each level via top-down scan
+	cur := sl.head
+	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
+		for {
+			nextTower := cur[lvl].next
+			if nextTower[lvl] == sl.tail[lvl] {
 				break
 			}
+			cmp := sl.cmp.Compare(key, nextTower[lvl].key)
+			if cmp > 0 {
+				cur = nextTower
+				continue
+			}
+			if cmp == 0 {
+				// Key exists, update value at level 0
+				nextTower[0].value = value
+				return nil
+			}
+			break
 		}
+		sl._preds[lvl] = cur
 	}
+
+	// Insert new tower with random height
+	level := sl.randomLevel()
+	newTower := make([]*slNode, level)
+	for i := range level {
+		prev := sl._preds[i]
+		next := prev[i].next
+		newNode := &slNode{
+			key:   key,
+			next:  next,
+			level: level,
+		}
+		newTower[i] = newNode
+		prev[i].next = newTower
+	}
+	newTower[0].value = value // Only set value at level 0
 
 	return nil
 }
@@ -135,49 +141,32 @@ func (sl *SkipList) Delete(key []byte) error {
 	return nil
 }
 
-// Return the path to get the node having greater or equal compared key, and a bool indicating whether the key exists
-func (sl *SkipList) findLessThanOrEqualPath(key []byte) ([][]*slNode, bool) {
-	path := make([][]*slNode, 0, sl.maxLevel/2)
-	curTower := sl.head
-
-	for {
-		path = append(path, curTower)
-
-		// Traverse from the highest level to the lowest level
-		for i := curTower[0].level - 1; i >= -1; i-- {
-			if i < 0 {
-				// Reached the lowest level, key doesn't exist
-				return path, false
+// Searches for a tower with the given key without
+func (sl *SkipList) findEqual(key []byte) ([]*slNode, bool) {
+	cur := sl.head
+	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
+		for {
+			nextTower := cur[lvl].next
+			// At tail for this level; drop down
+			if nextTower[lvl] == sl.tail[lvl] {
+				break
 			}
-			curNode := curTower[i]
-			nextTower := curNode.next
-			if nextTower[i] == sl.tail[i] {
+			cmp := sl.cmp.Compare(key, nextTower[lvl].key)
+			if cmp > 0 {
+				cur = nextTower
 				continue
 			}
-			cmpResult := sl.cmp.Compare(key, nextTower[i].key)
-			if cmpResult < 0 || nextTower[i] == sl.tail[i] {
-				// next node is larger then the key
-				// move down one level
-				continue
-			} else if cmpResult == 0 {
-				// key found -> return the path
-				path = append(path, nextTower)
-				return path, true
+			if cmp == 0 {
+				return nextTower, true
 			}
-			// key is larger then the next tower -> safe to break here and move to next tower
-			curTower = nextTower
-			break
-		}
-
-		// curTower = curTower[0].next
-		if curTower[0] == nil || curTower[0] == sl.tail[0] {
+			// cmp < 0: drop down
 			break
 		}
 	}
-
-	// key doesn't exist
-	return path, false
+	return nil, false
 }
+
+// Return the path to get the node having greater or equal compared key, and a bool indicating whether the key exists
 
 func (sl *SkipList) randomLevel() int {
 	level := 1

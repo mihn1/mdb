@@ -305,9 +305,13 @@ func TestSkipList_RandomOpsReference(t *testing.T) {
 // Benchmarks (optional): run with `go test -bench=.`
 func BenchmarkSkipList_Insert(b *testing.B) {
 	sl := NewSkipList(16, &byteLexComparator{})
+	keys := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		keys[i] = makeKey(i)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sl.Insert(makeKey(i), i)
+		_ = sl.Insert(keys[i], i)
 	}
 }
 
@@ -317,13 +321,21 @@ func BenchmarkSkipList_SearchHit(b *testing.B) {
 	if prefill < 1000 {
 		prefill = 1000
 	}
+	prefillKeys := make([][]byte, prefill)
 	for i := 0; i < prefill; i++ {
-		_ = sl.Insert(makeKey(i), i)
+		k := makeKey(i)
+		prefillKeys[i] = k
+		_ = sl.Insert(k, i)
+	}
+	// Build search keys to avoid allocation during benchmark loop
+	keys := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		k := i % prefill
+		keys[i] = prefillKeys[k]
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		k := i % prefill
-		_, _ = sl.Search(makeKey(k))
+		_, _ = sl.Search(keys[i])
 	}
 }
 
@@ -333,12 +345,21 @@ func BenchmarkSkipList_SearchMiss(b *testing.B) {
 	if prefill < 1000 {
 		prefill = 1000
 	}
+	prefillKeys := make([][]byte, prefill)
 	for i := 0; i < prefill; i++ {
-		_ = sl.Insert(makeKey(i*2), i)
+		k := makeKey(i * 2)
+		prefillKeys[i] = k
+		_ = sl.Insert(k, i)
+	}
+	// Build miss keys (odd gaps) to avoid allocation during benchmark
+	keys := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		k := i % prefill
+		// miss key sits between two existing even keys
+		keys[i] = []byte(fmt.Sprintf("%08d", k*2+1))
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		k := i % prefill
-		_, _ = sl.Search(makeKey(k*2 + 1))
+		_, _ = sl.Search(keys[i])
 	}
 }
