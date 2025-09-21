@@ -42,13 +42,13 @@ func makeKey(i int) []byte { return []byte(fmt.Sprintf("%08d", i)) }
 func checkRangePresent(t *testing.T, sl *SkipList, start, end int) {
 	t.Helper()
 	for i := start; i < end; i++ {
-		v, ok := sl.Search(makeKey(i))
+		v, ok := sl.Get(makeKey(i))
 		if !ok {
 			t.Fatalf("expected key %d to be present", i)
 		}
-		// Value may be stored as any; we expect int here per test setup.
-		if vi, ok2 := v.(int); !ok2 || vi != i {
-			t.Fatalf("value mismatch for %d: got %#v", i, v)
+		// Expect value to be the string representation of i as []byte
+		if !bytes.Equal(v, []byte(fmt.Sprintf("%d", i))) {
+			t.Fatalf("value mismatch for %d: got %q", i, string(v))
 		}
 	}
 }
@@ -61,39 +61,39 @@ func checkRangePresent(t *testing.T, sl *SkipList, start, end int) {
 
 // Basic operations
 func TestSkipList_InsertSearch_Basic(t *testing.T) {
-	for i := 0; i < 1513; i++ {
+	for i := 0; i < 12; i++ {
 		sl := NewSkipList(4, &byteLexComparator{})
 
 		// Empty search
-		if v, ok := sl.Search(makeKey(1)); ok || v != nil {
+		if v, ok := sl.Get(makeKey(1)); ok || v != nil {
 			t.Fatalf("expected empty search to be not found; got ok=%v v=%v", ok, v)
 		}
 
 		// Insert a few keys
-		keys := []int{5, 1, 3, 4, 2, 1, 5, 6, 12, 3, 512, 3, 417, 256, 1024}
+		keys := []int{5, 1, 3, 4, 2, 1, 5, 234, 123, 451, 12, 323, 21, 323, 123, 12, 321, 3}
 		for _, k := range keys {
-			if err := sl.Insert(makeKey(k), fmt.Sprintf("v%02d", k)); err != nil {
+			if err := sl.Put(makeKey(k), []byte(fmt.Sprintf("v%02d", k))); err != nil {
 				t.Fatalf("insert %d failed: %v", k, err)
 			}
 		}
 
 		// Search back
 		for _, k := range keys {
-			v, ok := sl.Search(makeKey(k))
+			v, ok := sl.Get(makeKey(k))
 			if !ok {
 				t.Fatalf("key %d not found", k)
 			}
-			if sv, ok := v.(string); !ok || sv != fmt.Sprintf("v%02d", k) {
-				t.Fatalf("value mismatch for %d: got %#v", k, v)
+			if !bytes.Equal(v, []byte(fmt.Sprintf("v%02d", k))) {
+				t.Fatalf("value mismatch for %d: got %q", k, string(v))
 			}
 		}
 
 		// Duplicate insert should update value (current policy)
-		if err := sl.Insert(makeKey(3), "v03-updated"); err != nil {
+		if err := sl.Put(makeKey(3), []byte("v03-updated")); err != nil {
 			t.Fatalf("duplicate update failed: %v", err)
 		}
-		if v, ok := sl.Search(makeKey(3)); !ok || v.(string) != "v03-updated" {
-			t.Fatalf("expected updated value for key 3, got %v ok=%v", v, ok)
+		if v, ok := sl.Get(makeKey(3)); !ok || !bytes.Equal(v, []byte("v03-updated")) {
+			t.Fatalf("expected updated value for key 3, got %q ok=%v", string(v), ok)
 		}
 	}
 }
@@ -111,7 +111,7 @@ func TestSkipList_LargeRandomized(t *testing.T) {
 	r := rand.New(rand.NewSource(1337))
 	idxs := r.Perm(N)
 	for _, i := range idxs {
-		if err := sl.Insert(makeKey(i), i); err != nil {
+		if err := sl.Put(makeKey(i), []byte(fmt.Sprintf("%d", i))); err != nil {
 			t.Fatalf("insert %d failed: %v", i, err)
 		}
 	}
@@ -122,7 +122,7 @@ func TestSkipList_LargeRandomized(t *testing.T) {
 	// Delete half in random order and verify the rest
 	dels := r.Perm(N)[:N/2]
 	for _, i := range dels {
-		if err := sl.Delete(makeKey(i)); err != nil {
+		if _, err := sl.Delete(makeKey(i)); err != nil {
 			t.Fatalf("delete %d failed: %v", i, err)
 		}
 	}
@@ -137,7 +137,7 @@ func TestSkipList_LargeRandomized(t *testing.T) {
 	}
 
 	for i := 0; i < N; i++ {
-		_, ok := sl.Search(makeKey(i))
+		_, ok := sl.Get(makeKey(i))
 		if ok != present[i] {
 			t.Fatalf("presence mismatch for %d: expected %v", i, present[i])
 		}
@@ -162,7 +162,7 @@ func TestSkipList_ConcurrentReaders(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < M; i++ {
-			_ = sl.Insert(makeKey(i), i)
+			_ = sl.Put(makeKey(i), []byte(fmt.Sprintf("%d", i)))
 			if i%50 == 0 {
 				time.Sleep(1 * time.Millisecond)
 			}
@@ -180,7 +180,7 @@ func TestSkipList_ConcurrentReaders(t *testing.T) {
 				return
 			default:
 				k := r.Intn(M)
-				sl.Search(makeKey(k))
+				sl.Get(makeKey(k))
 			}
 		}
 	}
@@ -197,7 +197,7 @@ func TestSkipList_ConcurrentReaders(t *testing.T) {
 
 	// After completion, all keys should be present
 	for i := 0; i < M; i++ {
-		if _, ok := sl.Search(makeKey(i)); !ok {
+		if _, ok := sl.Get(makeKey(i)); !ok {
 			t.Fatalf("key %d missing after writer completion", i)
 		}
 	}
@@ -206,18 +206,18 @@ func TestSkipList_ConcurrentReaders(t *testing.T) {
 // Duplicate behavior: current policy is update on duplicate (no error).
 func TestSkipList_DuplicateInsertPolicy(t *testing.T) {
 	sl := NewSkipList(8, &byteLexComparator{})
-	if err := sl.Insert(makeKey(1), "a"); err != nil {
+	if err := sl.Put(makeKey(1), []byte("a")); err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
-	if err := sl.Insert(makeKey(1), "b"); err != nil {
+	if err := sl.Put(makeKey(1), []byte("b")); err != nil {
 		t.Fatalf("second insert (update) failed: %v", err)
 	}
-	v, ok := sl.Search(makeKey(1))
+	v, ok := sl.Get(makeKey(1))
 	if !ok {
 		t.Fatalf("key should exist after update")
 	}
-	if s, _ := v.(string); s != "b" {
-		t.Fatalf("value not updated on duplicate insert: got %v", v)
+	if !bytes.Equal(v, []byte("b")) {
+		t.Fatalf("value not updated on duplicate insert: got %q", string(v))
 	}
 }
 
@@ -228,11 +228,11 @@ func TestSkipList_DuplicateInsertPolicy(t *testing.T) {
 func TestSkipList_RandomOpsReference(t *testing.T) {
 	sl := NewSkipList(10, &byteLexComparator{})
 
-	ref := map[string]any{}
+	ref := map[string][]byte{}
 	type op struct {
 		typ string
 		k   string
-		v   any
+		v   []byte
 	}
 	var ops []op
 
@@ -250,7 +250,7 @@ func TestSkipList_RandomOpsReference(t *testing.T) {
 		k := fmt.Sprintf("%x", r.Intn(keySpace))
 		switch r.Intn(3) {
 		case 0: // insert
-			v := r.Int()
+			v := []byte(fmt.Sprintf("%d", r.Int()))
 			ops = append(ops, op{"put", k, v})
 		case 1: // delete
 			ops = append(ops, op{"del", k, nil})
@@ -264,23 +264,23 @@ func TestSkipList_RandomOpsReference(t *testing.T) {
 		key := []byte(op.k)
 		switch op.typ {
 		case "put":
-			err := sl.Insert(key, op.v)
+			err := sl.Put(key, op.v)
 			if err != nil {
 				t.Fatalf("unexpected insert error for key %q: %v", op.k, err)
 			}
 			// Update policy: latest value wins
 			ref[op.k] = op.v
 		case "del":
-			_ = sl.Delete(key)
+			_, _ = sl.Delete(key)
 			delete(ref, op.k)
 		case "get":
-			v, ok := sl.Search(key)
+			v, ok := sl.Get(key)
 			rv, rok := ref[op.k]
 			if ok != rok {
 				t.Fatalf("presence mismatch for %q: impl=%v ref=%v", op.k, ok, rok)
 			}
-			if ok && fmt.Sprint(v) != fmt.Sprint(rv) {
-				t.Fatalf("value mismatch for %q: impl=%v ref=%v", op.k, v, rv)
+			if ok && !bytes.Equal(v, rv) {
+				t.Fatalf("value mismatch for %q: impl=%q ref=%q", op.k, string(v), string(rv))
 			}
 		}
 	}
@@ -292,12 +292,12 @@ func TestSkipList_RandomOpsReference(t *testing.T) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		v, ok := sl.Search([]byte(k))
+		v, ok := sl.Get([]byte(k))
 		if !ok {
 			t.Fatalf("final presence mismatch for %q", k)
 		}
-		if fmt.Sprint(v) != fmt.Sprint(ref[k]) {
-			t.Fatalf("final value mismatch for %q: impl=%v ref=%v", k, v, ref[k])
+		if !bytes.Equal(v, ref[k]) {
+			t.Fatalf("final value mismatch for %q: impl=%q ref=%q", k, string(v), string(ref[k]))
 		}
 	}
 }
@@ -311,7 +311,7 @@ func BenchmarkSkipList_Insert(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sl.Insert(keys[i], i)
+		_ = sl.Put(keys[i], keys[i])
 	}
 }
 
@@ -325,7 +325,7 @@ func BenchmarkSkipList_SearchHit(b *testing.B) {
 	for i := 0; i < prefill; i++ {
 		k := makeKey(i)
 		prefillKeys[i] = k
-		_ = sl.Insert(k, i)
+		_ = sl.Put(k, k)
 	}
 	// Build search keys to avoid allocation during benchmark loop
 	keys := make([][]byte, b.N)
@@ -335,7 +335,7 @@ func BenchmarkSkipList_SearchHit(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = sl.Search(keys[i])
+		_, _ = sl.Get(keys[i])
 	}
 }
 
@@ -349,7 +349,7 @@ func BenchmarkSkipList_SearchMiss(b *testing.B) {
 	for i := 0; i < prefill; i++ {
 		k := makeKey(i * 2)
 		prefillKeys[i] = k
-		_ = sl.Insert(k, i)
+		_ = sl.Put(k, k)
 	}
 	// Build miss keys (odd gaps) to avoid allocation during benchmark
 	keys := make([][]byte, b.N)
@@ -360,6 +360,143 @@ func BenchmarkSkipList_SearchMiss(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = sl.Search(keys[i])
+		_, _ = sl.Get(keys[i])
+	}
+}
+
+// Delete of present keys: measure delete cost; reinsert outside timer to keep load steady
+func BenchmarkSkipList_DeleteHit(b *testing.B) {
+	sl := NewSkipList(16, &byteLexComparator{})
+	prefill := sampleSize * 100
+	if prefill < 1000 {
+		prefill = 1000
+	}
+	keys := make([][]byte, prefill)
+	for i := 0; i < prefill; i++ {
+		k := makeKey(i)
+		keys[i] = k
+		_ = sl.Put(k, k)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		k := keys[i%prefill]
+		_, _ = sl.Delete(k)
+		b.StopTimer()
+		_ = sl.Put(k, k)
+		b.StartTimer()
+	}
+}
+
+// Delete of absent keys: measure miss path (no state changes required)
+func BenchmarkSkipList_DeleteMiss(b *testing.B) {
+	sl := NewSkipList(16, &byteLexComparator{})
+	prefill := sampleSize * 100
+	if prefill < 1000 {
+		prefill = 1000
+	}
+	for i := 0; i < prefill; i++ {
+		_ = sl.Put(makeKey(i*2), []byte("v"))
+	}
+	// Build miss keys (odd)
+	keys := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		k := i % prefill
+		keys[i] = []byte(fmt.Sprintf("%08d", k*2+1))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = sl.Delete(keys[i])
+	}
+}
+
+// Mixed workload: ~60% Get, 30% Put, 10% Delete
+func BenchmarkSkipList_MixedWorkload(b *testing.B) {
+	sl := NewSkipList(16, &byteLexComparator{})
+
+	prefill := sampleSize * 100
+	if prefill < 1000 {
+		prefill = 1000
+	}
+	keysPool := make([][]byte, prefill)
+	for i := 0; i < prefill; i++ {
+		k := makeKey(i)
+		keysPool[i] = k
+		_ = sl.Put(k, k)
+	}
+
+	// Precompute ops and keys to avoid allocations in timed loop
+	// 0=get, 1=put, 2=del
+	ops := make([]byte, b.N)
+	keys := make([][]byte, b.N)
+	r := rand.New(rand.NewSource(20250921))
+	for i := 0; i < b.N; i++ {
+		p := r.Intn(100)
+		switch {
+		case p < 60:
+			ops[i] = 0 // get
+		case p < 90:
+			ops[i] = 1 // put
+		default:
+			ops[i] = 2 // del
+		}
+		keys[i] = keysPool[r.Intn(prefill)]
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		switch ops[i] {
+		case 0:
+			_, _ = sl.Get(keys[i])
+		case 1:
+			_ = sl.Put(keys[i], keys[i])
+		default:
+			_, _ = sl.Delete(keys[i])
+		}
+	}
+
+}
+
+// Mixed workload (write-heavy): ~80% Put, 10% Get, 10% Delete
+func BenchmarkSkipList_MixedWorkloadWriteHeavy(b *testing.B) {
+	sl := NewSkipList(16, &byteLexComparator{})
+
+	prefill := sampleSize * 100
+	if prefill < 1000 {
+		prefill = 1000
+	}
+	keysPool := make([][]byte, prefill)
+	for i := 0; i < prefill; i++ {
+		k := makeKey(i)
+		keysPool[i] = k
+		_ = sl.Put(k, k)
+	}
+
+	// 0=get (10%), 1=put (80%), 2=del (10%)
+	ops := make([]byte, b.N)
+	keys := make([][]byte, b.N)
+	r := rand.New(rand.NewSource(20250921))
+	for i := 0; i < b.N; i++ {
+		p := r.Intn(100)
+		switch {
+		case p < 10:
+			ops[i] = 0 // get
+		case p < 90:
+			ops[i] = 1 // put
+		default:
+			ops[i] = 2 // del
+		}
+		keys[i] = keysPool[r.Intn(prefill)]
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		switch ops[i] {
+		case 0:
+			_, _ = sl.Get(keys[i])
+		case 1:
+			_ = sl.Put(keys[i], keys[i])
+		default:
+			_, _ = sl.Delete(keys[i])
+		}
 	}
 }

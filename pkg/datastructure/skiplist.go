@@ -1,50 +1,41 @@
 package datastructure
 
 import (
-	"strconv"
 	"sync"
 
 	"github.com/mihn1/mdb/pkg/utils"
 )
 
-type DbInterator interface {
-	Insert(key []byte, value any) error
-	Search(key []byte) (any, bool)
-	Delete(key []byte) error
-}
-
 type SkipList struct {
-	head     []*slNode
-	tail     []*slNode
+	head     *node
+	tail     *node
 	maxLevel int
 	mu       sync.RWMutex
 	cmp      Comparator
-	_preds   [][]*slNode // Reusable slice for path tracking when insertion to avoid allocations
+	_preds   []*node // Reusable slice for path tracking when insertion to avoid allocations
 }
 
-type slNode struct {
+type node struct {
 	key   []byte
-	value any
-	next  []*slNode // Array of forward pointers
-	level int       // Height of the tower
+	value []byte
+	next  []*node // Array of forward pointers
+	prev  []*node // Array of previous pointers
+	// level int        // The level of the node (can be inferred from length of next and prev slices)
 }
 
 func NewSkipList(maxLevel int, cmp Comparator) *SkipList {
 	utils.AssertMsg(maxLevel > 0, "maxLevel must be greater than 0")
 	utils.AssertMsg(cmp != nil, "comparator must not be nil")
 
-	tail := make([]*slNode, maxLevel)
-	head := make([]*slNode, maxLevel)
-
+	tail := &node{
+		prev: make([]*node, maxLevel),
+	}
+	head := &node{
+		next: make([]*node, maxLevel),
+	}
 	for i := range maxLevel {
-		head[i] = &slNode{
-			next:  tail,
-			level: maxLevel,
-		}
-		tail[i] = &slNode{
-			next:  nil,
-			level: maxLevel,
-		}
+		head.next[i] = tail
+		tail.prev[i] = head
 	}
 
 	return &SkipList{
@@ -53,146 +44,116 @@ func NewSkipList(maxLevel int, cmp Comparator) *SkipList {
 		maxLevel: maxLevel,
 		mu:       sync.RWMutex{},
 		cmp:      cmp,
-		_preds:   make([][]*slNode, maxLevel),
+		_preds:   make([]*node, maxLevel),
 	}
 }
 
-func (sl *SkipList) Search(key []byte) (any, bool) {
+func (sl *SkipList) Get(key []byte) ([]byte, bool) {
 	sl.mu.RLock()
 	defer sl.mu.RUnlock()
-	if tower, ok := sl.findEqual(key); ok {
-		return tower[0].value, true
+
+	foundNode := sl.findNode(key)
+	if foundNode != nil {
+		return foundNode.value, true
 	}
+
 	return nil, false
 }
 
-func (sl *SkipList) Insert(key []byte, value any) error {
+func (sl *SkipList) Put(key []byte, value []byte) error {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
-	// Find predecessors for each level via top-down scan
+
 	cur := sl.head
+	// Traverse from the highest node to the lowest
 	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
 		for {
-			nextTower := cur[lvl].next
-			if nextTower[lvl] == sl.tail[lvl] {
+			nextNode := cur.next[lvl]
+			if nextNode == sl.tail {
+				// Drop down
 				break
 			}
-			cmp := sl.cmp.Compare(key, nextTower[lvl].key)
-			if cmp > 0 {
-				cur = nextTower
-				continue
-			}
+
+			cmp := sl.cmp.Compare(key, nextNode.key)
 			if cmp == 0 {
-				// Key exists, update value at level 0
-				nextTower[0].value = value
+				// Found the node, update it the return
+				nextNode.value = value
 				return nil
+			} else if cmp > 0 {
+				// Move cur to the right and add nextNode to path, and keep the same level
+				cur = nextNode
+				continue
 			}
+			// The key is smaller than the nextNode, keep going down
 			break
 		}
-		sl._preds[lvl] = cur
+		sl._preds[lvl] = cur // Add current node to path
 	}
 
-	// Insert new tower with random height
-	level := sl.randomLevel()
-	newTower := make([]*slNode, level)
-	for i := range level {
-		prev := sl._preds[i]
-		next := prev[i].next
-		newNode := &slNode{
-			key:   key,
-			next:  next,
-			level: level,
-		}
-		newTower[i] = newNode
-		prev[i].next = newTower
+	// Put the new node for the new key
+	newLevel := utils.RandomLevel(sl.maxLevel)
+	newNode := &node{
+		key:   key,
+		value: value,
+		next:  make([]*node, newLevel),
+		prev:  make([]*node, newLevel),
 	}
-	newTower[0].value = value // Only set value at level 0
+	for lvl := range newLevel {
+		// Update previous pointers
+		pred := sl._preds[lvl]
+		pred.next[lvl].prev[lvl] = newNode
+		newNode.prev[lvl] = pred
+
+		// Update forward pointers for the pred and the new nodes
+		newNode.next[lvl] = pred.next[lvl]
+		pred.next[lvl] = newNode
+	}
 
 	return nil
 }
 
-func (sl *SkipList) Delete(key []byte) error {
+func (sl *SkipList) Delete(key []byte) (bool, error) {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 
-	// Unlink the target tower from all levels without relying on the path stack.
+	node := sl.findNode(key)
+	if node != nil {
+		level := len(node.next)
+		for i := range level {
+			// Update forward and previous pointers
+			node.prev[i].next[i] = node.next[i]
+			node.next[i].prev[i] = node.prev[i]
+		}
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// The caller should retain the lock before calling this function
+func (sl *SkipList) findNode(key []byte) *node {
 	cur := sl.head
+	// Traverse from the highest node to the lowest
 	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
 		for {
-			nextTower := cur[lvl].next
-			// Reached tail at this level
-			if nextTower[lvl] == sl.tail[lvl] {
+			nextNode := cur.next[lvl]
+			if nextNode == sl.tail {
+				// Drop down
 				break
 			}
-			cmp := sl.cmp.Compare(key, nextTower[lvl].key)
-			if cmp > 0 {
-				// advance horizontally on this level
-				cur = nextTower
+
+			cmp := sl.cmp.Compare(key, nextNode.key)
+			if cmp == 0 {
+				return nextNode
+			} else if cmp > 0 {
+				// move node to the next tower (to the right) and keep the same level
+				cur = nextNode
 				continue
 			}
-			if cmp == 0 {
-				// unlink at this level
-				cur[lvl].next = nextTower[lvl].next
-			}
-			// cmp < 0 or after unlink: drop down a level
+			// If key is smaller than the next node -> keep dropping down
 			break
 		}
 	}
+
 	return nil
-}
-
-// Searches for a tower with the given key without
-func (sl *SkipList) findEqual(key []byte) ([]*slNode, bool) {
-	cur := sl.head
-	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
-		for {
-			nextTower := cur[lvl].next
-			// At tail for this level; drop down
-			if nextTower[lvl] == sl.tail[lvl] {
-				break
-			}
-			cmp := sl.cmp.Compare(key, nextTower[lvl].key)
-			if cmp > 0 {
-				cur = nextTower
-				continue
-			}
-			if cmp == 0 {
-				return nextTower, true
-			}
-			// cmp < 0: drop down
-			break
-		}
-	}
-	return nil, false
-}
-
-// Return the path to get the node having greater or equal compared key, and a bool indicating whether the key exists
-
-func (sl *SkipList) randomLevel() int {
-	level := 1
-	for level < sl.maxLevel && utils.RandomBool() {
-		level++
-	}
-	return level
-}
-
-func (sl *SkipList) PrettyPrint() string {
-	sl.mu.RLock()
-	defer sl.mu.RUnlock()
-
-	result := ""
-	curTower := sl.head[0].next
-	for curTower[0] != sl.tail[0] {
-		result += string(curTower[0].key) + ":"
-		if valStr, ok := curTower[0].value.(string); ok {
-			result += valStr
-		} else {
-			result += "?"
-		}
-		result += "[L" + strconv.Itoa(curTower[0].level) + "]"
-		result += " -> "
-		curTower = curTower[0].next
-	}
-	result += "nil"
-	return result
 }
