@@ -3,12 +3,17 @@ package sstable
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync/atomic"
+	"time"
 
 	"github.com/mihn1/mdb/pkg/memtable"
 	"github.com/mihn1/mdb/pkg/utils"
 )
 
 /// table builder to create sstables from memtables
+
+var globalSeq uint64
 
 func BuildTable(mem *memtable.MemTable, path string) error {
 	// iterate over memtable
@@ -19,10 +24,12 @@ func BuildTable(mem *memtable.MemTable, path string) error {
 	iter := mem.Iterator()
 	utils.AssertMsg(iter != nil, "memtable iterator should not be nil")
 
-	dir := path + "/tables"
+	dir := filepath.Join(path, "tables")
 	utils.CreateDirIfNotExist(dir)
-	// Open file for writing, interpolate level and timestamp in the filename
-	filePath := dir + fmt.Sprintf("/sstable-%d-%d.sst", 0, 0)
+	seq := atomic.AddUint64(&globalSeq, 1) - 1
+	ts := time.Now().UnixNano()
+	// Simple pattern: level 0, sequence, timestamp
+	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err

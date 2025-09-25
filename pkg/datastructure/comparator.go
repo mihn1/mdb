@@ -1,5 +1,7 @@
 package datastructure
 
+import "bytes"
+
 type Comparator interface {
 	Compare(a []byte, b []byte) int
 	Name() string
@@ -52,3 +54,13 @@ func (c *ByteSliceComparator) Compare(a []byte, b []byte) int {
 func (c *ByteSliceComparator) Name() string {
 	return "ByteSliceComparator"
 }
+
+// byteLexComparator is a simple lexicographic comparator for []byte keys.
+// It mirrors the intended Comparator shape: Compare(a, b []byte) int; Name() string
+type byteLexComparator struct{}
+
+func (c *byteLexComparator) Compare(a, b []byte) int {
+	return bytes.Compare(a, b)
+}
+
+func (c *byteLexComparator) Name() string { return "byte-lex" }

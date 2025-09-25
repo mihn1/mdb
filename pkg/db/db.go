@@ -2,6 +2,7 @@ package db
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/mihn1/mdb/pkg/memtable"
 	"github.com/mihn1/mdb/pkg/sstable"
@@ -16,6 +17,7 @@ type DB struct {
 	memtableMu sync.RWMutex // Mutex to protect memtable access during flush and swaps
 	path       string
 	opts       *Options
+	flushes    uint64 // number of successful flushes
 }
 
 // Options contains configuration for the database
@@ -92,6 +94,23 @@ func (db *DB) flush() error {
 	// In a real implementation, we would write the immutable memtable to an SSTable on disk
 
 	err := sstable.BuildTable(db.immutable, db.path)
-	utils.AssertNoErr(err, "failed to build sstable from memtable: %v") // Should panic if critical error occurs during flush
+	utils.AssertNoErr(err, "failed to build sstable from memtable: %v") // panic on critical error
+	if err == nil {
+		atomic.AddUint64(&db.flushes, 1)
+	}
 	return err
+}
+
+// Stats holds simple debug counters (unstable API).
+type Stats struct {
+	MemTableSize uint64
+	Flushes      uint64
+}
+
+// Stats returns current debug counters.
+func (db *DB) Stats() Stats {
+	return Stats{
+		MemTableSize: db.memtable.Size(),
+		Flushes:      atomic.LoadUint64(&db.flushes),
+	}
 }
