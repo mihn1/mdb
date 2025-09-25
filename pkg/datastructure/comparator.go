@@ -27,3 +27,28 @@ func (c *StringComparator) Compare(a []byte, b []byte) int {
 func (c *StringComparator) Name() string {
 	return "StringComparator"
 }
+
+type ByteSliceComparator struct{}
+
+func (c *ByteSliceComparator) Compare(a []byte, b []byte) int {
+	minLen := min(len(b), len(a))
+
+	for i := 0; i < minLen; i++ {
+		if a[i] < b[i] {
+			return -1
+		} else if a[i] > b[i] {
+			return 1
+		}
+	}
+
+	if len(a) < len(b) {
+		return -1
+	} else if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+func (c *ByteSliceComparator) Name() string {
+	return "ByteSliceComparator"
+}

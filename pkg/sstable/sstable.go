@@ -1,6 +1,10 @@
 package sstable
 
-import "io"
+import (
+	"io"
+
+	"github.com/mihn1/mdb/pkg/internal"
+)
 
 // SSTable represents an immutable sorted string table
 type SSTable struct {
@@ -47,16 +51,7 @@ func (r *Reader) Get(key []byte) ([]byte, bool, error) {
 }
 
 // Return an iterator over the SSTable
-func (r *Reader) Iterator() Iterator {
+func (r *Reader) Iterator() internal.Iterator {
 	// TODO: Implement SSTable iterator
 	return nil
-}
-
-// Iterator interface for traversing SSTable
-type Iterator interface {
-	Valid() bool
-	Key() []byte
-	Value() []byte
-	Next()
-	Seek(key []byte)
 }

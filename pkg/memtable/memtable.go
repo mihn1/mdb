@@ -1,47 +1,42 @@
 package memtable
 
+import (
+	"github.com/mihn1/mdb/pkg/datastructure"
+	"github.com/mihn1/mdb/pkg/internal"
+)
+
 // MemTable represents the in-memory sorted structure
 type MemTable struct {
-	// TODO: Implement skip list or balanced tree
+	sl *datastructure.SkipList
 }
 
 // Create a new MemTable
 func New() *MemTable {
-	return &MemTable{}
+	// TODO: Make maxLevel configurable
+	maxLevel := 16
+	return &MemTable{
+		sl: datastructure.NewSkipList(maxLevel, &datastructure.ByteSliceComparator{}),
+	}
 }
 
 func (m *MemTable) Put(key, value []byte) error {
-	// TODO: Implement skip list insertion
-	return nil
+	return m.sl.Put(key, value)
 }
 
 func (m *MemTable) Get(key []byte) ([]byte, bool) {
-	// TODO: Implement skip list lookup
-	return nil, false
+	return m.sl.Get(key)
 }
 
-func (m *MemTable) Delete(key []byte) error {
-	// TODO: Implement tombstone insertion
-	return nil
+func (m *MemTable) Delete(key []byte) (bool, error) {
+	return m.sl.Delete(key) // Delete the key in SkipList for now
 }
 
 // Return the approximate size in bytes
-func (m *MemTable) Size() int {
-	// TODO: Calculate memory usage
-	return 0
+func (m *MemTable) Size() uint64 {
+	return m.sl.Size()
 }
 
 // Return an iterator over the MemTable
-func (m *MemTable) Iterator() Iterator {
-	// TODO: Implement iterator
-	return nil
-}
-
-// Interface for traversing key-value pairs
-type Iterator interface {
-	Valid() bool
-	Key() []byte
-	Value() []byte
-	Next()
-	Seek(key []byte)
+func (m *MemTable) Iterator() internal.Iterator {
+	return m.sl.Iterator()
 }

@@ -11,3 +11,9 @@ func Assert(cond bool) {
 		panic("critical invariant violated")
 	}
 }
+
+func AssertNoErr(err error, msg string) {
+	if err != nil {
+		panic(err)
+	}
+}

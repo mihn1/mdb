@@ -3,6 +3,7 @@ package datastructure
 import (
 	"sync"
 
+	"github.com/mihn1/mdb/pkg/internal"
 	"github.com/mihn1/mdb/pkg/utils"
 )
 
@@ -10,6 +11,7 @@ type SkipList struct {
 	head     *node
 	tail     *node
 	maxLevel int
+	size     uint64 // Number of bytes for keys and values estimated in the skiplist
 	mu       sync.RWMutex
 	cmp      Comparator
 	_preds   []*node // Reusable slice for path tracking when insertion to avoid allocations
@@ -52,7 +54,7 @@ func (sl *SkipList) Get(key []byte) ([]byte, bool) {
 	sl.mu.RLock()
 	defer sl.mu.RUnlock()
 
-	foundNode := sl.findNode(key)
+	foundNode := sl.FindNode(key)
 	if foundNode != nil {
 		return foundNode.value, true
 	}
@@ -77,6 +79,7 @@ func (sl *SkipList) Put(key []byte, value []byte) error {
 			cmp := sl.cmp.Compare(key, nextNode.key)
 			if cmp == 0 {
 				// Found the node, update it the return
+				sl.size += uint64(len(value) - len(nextNode.value))
 				nextNode.value = value
 				return nil
 			} else if cmp > 0 {
@@ -109,6 +112,8 @@ func (sl *SkipList) Put(key []byte, value []byte) error {
 		pred.next[lvl] = newNode
 	}
 
+	// Update size
+	sl.size += uint64(len(key) + len(value))
 	return nil
 }
 
@@ -116,7 +121,7 @@ func (sl *SkipList) Delete(key []byte) (bool, error) {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 
-	node := sl.findNode(key)
+	node := sl.FindNode(key)
 	if node != nil {
 		level := len(node.next)
 		for i := range level {
@@ -124,6 +129,7 @@ func (sl *SkipList) Delete(key []byte) (bool, error) {
 			node.prev[i].next[i] = node.next[i]
 			node.next[i].prev[i] = node.prev[i]
 		}
+		sl.size -= uint64(len(node.key) + len(node.value))
 		return true, nil
 	}
 
@@ -131,7 +137,7 @@ func (sl *SkipList) Delete(key []byte) (bool, error) {
 }
 
 // The caller should retain the lock before calling this function
-func (sl *SkipList) findNode(key []byte) *node {
+func (sl *SkipList) FindNode(key []byte) *node {
 	cur := sl.head
 	// Traverse from the highest node to the lowest
 	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
@@ -156,4 +162,64 @@ func (sl *SkipList) findNode(key []byte) *node {
 	}
 
 	return nil
+}
+
+// Return the approximate size in bytes
+func (sl *SkipList) Size() uint64 {
+	sl.mu.RLock()
+	defer sl.mu.RUnlock()
+	return sl.size
+}
+
+func (sl *SkipList) Iterator() internal.Iterator {
+	return newSkipListIterator(sl)
+}
+
+type skipListIterator struct {
+	sl      *SkipList
+	current *node
+}
+
+func newSkipListIterator(sl *SkipList) *skipListIterator {
+	return &skipListIterator{
+		sl:      sl,
+		current: sl.head,
+	}
+}
+
+func (it *skipListIterator) Valid() bool {
+	return it.current != it.sl.tail && it.current != it.sl.head
+}
+
+func (it *skipListIterator) Key() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	return it.current.key
+}
+
+func (it *skipListIterator) Value() []byte {
+	if !it.Valid() {
+		return nil
+	}
+	return it.current.value
+}
+
+func (it *skipListIterator) Next() {
+	if it.current != it.sl.tail {
+		it.current = it.current.next[0]
+	}
+}
+
+func (it *skipListIterator) Seek(key []byte) {
+	foundNode := it.sl.FindNode(key)
+	if foundNode != nil {
+		it.current = foundNode
+	} else {
+		it.current = it.sl.tail
+	}
+}
+
+func (it *skipListIterator) SeekToFirst() {
+	it.current = it.sl.head.next[0]
 }
