@@ -42,3 +42,4 @@ Thumbs.db
 *.temp
 *.log
 leveldb.code-workspace
+PROJECT_DESCRIPTION.md

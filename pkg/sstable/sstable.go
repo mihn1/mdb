@@ -11,31 +11,9 @@ type SSTable struct {
 	// TODO: Add fields for file handle, index, etc.
 }
 
-// Writer builds SSTables from sorted data
-type Writer struct {
-	// TODO: Add fields for building SSTable
-}
-
 // Reader reads from existing SSTables
 type Reader struct {
 	// TODO: Add fields for reading SSTable
-}
-
-// Create a new SSTable writer
-func NewWriter(w io.Writer) *Writer {
-	return &Writer{}
-}
-
-// Add a key-value pair (keys must be added in sorted order)
-func (w *Writer) Add(key, value []byte) error {
-	// TODO: Implement SSTable building
-	return nil
-}
-
-// Finish building the SSTable and writes metadata
-func (w *Writer) Finish() error {
-	// TODO: Write index blocks and footer
-	return nil
 }
 
 // Create a new SSTable reader

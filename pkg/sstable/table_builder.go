@@ -2,7 +2,6 @@ package sstable
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -28,22 +27,15 @@ func BuildTable(mem *memtable.MemTable, path string) error {
 	utils.CreateDirIfNotExist(dir)
 	seq := atomic.AddUint64(&globalSeq, 1) - 1
 	ts := time.Now().UnixNano()
-	// Simple pattern: level 0, sequence, timestamp
 	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	w, err := NewWriter(filePath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
 	for ; iter.Valid(); iter.Next() {
-		key := iter.Key()
-		value := iter.Value()
-		_, err := fmt.Fprintf(f, "%s:%s\n", key, value)
-		if err != nil {
+		if err := w.Add(iter.Key(), iter.Value()); err != nil {
 			return err
 		}
 	}
-
-	return nil
+	return w.Finish()
 }

@@ -68,8 +68,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 func (db *DB) Delete(key []byte) error {
 	// Delete in the MemTable for now
-	_, err := db.memtable.Delete(key)
-	return err
+	return db.memtable.Delete(key)
 }
 
 func (db *DB) Close() error {

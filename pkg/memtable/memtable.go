@@ -20,15 +20,28 @@ func New() *MemTable {
 }
 
 func (m *MemTable) Put(key, value []byte) error {
+	value = append(value, byte(internal.TypeValue))
 	return m.sl.Put(key, value)
 }
 
 func (m *MemTable) Get(key []byte) ([]byte, bool) {
-	return m.sl.Get(key)
+	val, found := m.sl.Get(key)
+	if !found {
+		return nil, false
+	}
+
+	// Get the value type embedded in the last byte
+	valType := val[len(val)-1]
+	if valType == byte(internal.TypeTombstone) {
+		return nil, false
+	}
+
+	return val[:len(val)-1], true
 }
 
-func (m *MemTable) Delete(key []byte) (bool, error) {
-	return m.sl.Delete(key) // Delete the key in SkipList for now
+func (m *MemTable) Delete(key []byte) error {
+	value := []byte{byte(internal.TypeTombstone)}
+	return m.sl.Put(key, value)
 }
 
 // Return the approximate size in bytes
