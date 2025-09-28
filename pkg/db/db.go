@@ -1,9 +1,14 @@
 package db
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/mihn1/mdb/pkg/common"
 	"github.com/mihn1/mdb/pkg/memtable"
 	"github.com/mihn1/mdb/pkg/sstable"
 	"github.com/mihn1/mdb/pkg/utils"
@@ -16,20 +21,17 @@ type DB struct {
 	immutable  *memtable.MemTable
 	memtableMu sync.RWMutex // Mutex to protect memtable access during flush and swaps
 	path       string
-	opts       *Options
+	opts       *common.Options
 	flushes    uint64 // number of successful flushes
-}
-
-// Options contains configuration for the database
-type Options struct {
-	MemTableSize uint64 // Maximum size of MemTable before flushing to disk
+	globalSeq  uint64 // global sequence number for SSTable files
 }
 
 // Open a database at the given path
-func Open(path string, opts *Options) (*DB, error) {
+func Open(path string, opts *common.Options) (*DB, error) {
 	// TODO: Implement database opening logic
+
 	db := &DB{
-		memtable:   memtable.New(),
+		memtable:   memtable.New(opts),
 		immutable:  nil,
 		memtableMu: sync.RWMutex{},
 		path:       path,
@@ -85,14 +87,14 @@ func (db *DB) flush() error {
 	db.memtableMu.Lock()
 	defer db.memtableMu.Unlock()
 
-	newMemtable := memtable.New()
+	newMemtable := memtable.New(db.opts)
 	db.immutable = db.memtable
 	db.memtable = newMemtable
 	// Now memtable is free to be flushed to disk asynchronously
 	// For now, just simulate the flush with a sleep or log
 	// In a real implementation, we would write the immutable memtable to an SSTable on disk
 
-	err := sstable.BuildTable(db.immutable, db.path)
+	err := db.flushMemtable(db.immutable, db.path)
 	utils.AssertNoErr(err, "failed to build sstable from memtable: %v") // panic on critical error
 	if err == nil {
 		atomic.AddUint64(&db.flushes, 1)
@@ -112,4 +114,37 @@ func (db *DB) Stats() Stats {
 		MemTableSize: db.memtable.Size(),
 		Flushes:      atomic.LoadUint64(&db.flushes),
 	}
+}
+
+func (db *DB) flushMemtable(mem *memtable.MemTable, path string) error {
+	// iterate over memtable
+	// write to sstable file
+	iter := mem.Iterator()
+	utils.AssertMsg(iter != nil, "memtable iterator should not be nil")
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	dir := filepath.Join(path, "tables")
+	utils.CreateDirIfNotExist(dir)
+	seq := atomic.AddUint64(&db.globalSeq, 1) - 1
+	ts := time.Now().UnixNano()
+	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
+	file, err = os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	builder, err := sstable.NewTableBuilder(file, nil)
+	if err != nil {
+		return err
+	}
+	for ; iter.Valid(); iter.Next() {
+		if err := builder.Add(iter.Key(), iter.Value()); err != nil {
+			return err
+		}
+	}
+	return builder.Finish()
 }

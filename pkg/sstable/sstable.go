@@ -3,7 +3,7 @@ package sstable
 import (
 	"io"
 
-	"github.com/mihn1/mdb/pkg/internal"
+	"github.com/mihn1/mdb/pkg/common"
 )
 
 // SSTable represents an immutable sorted string table
@@ -29,7 +29,7 @@ func (r *Reader) Get(key []byte) ([]byte, bool, error) {
 }
 
 // Return an iterator over the SSTable
-func (r *Reader) Iterator() internal.Iterator {
+func (r *Reader) Iterator() common.Iterator {
 	// TODO: Implement SSTable iterator
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mihn1/mdb/pkg/common"
 	"github.com/mihn1/mdb/pkg/db"
 )
 
@@ -22,7 +23,7 @@ func makeTempDir(t *testing.T) string {
 // openTestDB opens a DB with a very small memtable size to force flushes easily when requested.
 func openTestDB(t *testing.T, path string, memSize uint64) *db.DB {
 	t.Helper()
-	d, err := db.Open(path, &db.Options{MemTableSize: memSize})
+	d, err := db.Open(path, common.NewDefaultOptions())
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}

@@ -3,13 +3,12 @@ package main
 import (
 	"log"
 
+	"github.com/mihn1/mdb/pkg/common"
 	"github.com/mihn1/mdb/pkg/db"
 )
 
 func main() {
-	db, err := db.Open("/tmp/mdbtest", &db.Options{
-		MemTableSize: 1024 * 1024, // 1MB
-	})
+	db, err := db.Open("/tmp/mdbtest", common.NewDefaultOptions())
 
 	if err != nil {
 		log.Fatal("Failed to open DB:", err)

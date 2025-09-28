@@ -1,4 +1,4 @@
-package internal
+package common
 
 // ValueType represents the type of value (value or tombstone)
 type ValueType byte

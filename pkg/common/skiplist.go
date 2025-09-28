@@ -1,9 +1,8 @@
-package datastructure
+package common
 
 import (
 	"sync"
 
-	"github.com/mihn1/mdb/pkg/internal"
 	"github.com/mihn1/mdb/pkg/utils"
 )
 
@@ -171,7 +170,7 @@ func (sl *SkipList) Size() uint64 {
 	return sl.size
 }
 
-func (sl *SkipList) Iterator() internal.Iterator {
+func (sl *SkipList) Iterator() Iterator {
 	return newSkipListIterator(sl)
 }
 

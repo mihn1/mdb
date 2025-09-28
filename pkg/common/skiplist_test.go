@@ -1,4 +1,4 @@
-package datastructure
+package common
 
 import (
 	"bytes"
@@ -42,12 +42,6 @@ func checkRangePresent(t *testing.T, sl *SkipList, start, end int) {
 		}
 	}
 }
-
-// assertLevel0Sorted verifies that level-0 forward pointers form a sorted chain.
-// This inspects internals because we are in the same package.
-// Note: We avoid asserting internal structure to keep tests
-// compatible while implementation evolves. We validate behavior
-// through public methods Insert/Search/Delete.
 
 // Basic operations
 func TestSkipList_InsertSearch_Basic(t *testing.T) {
@@ -212,7 +206,7 @@ func TestSkipList_DuplicateInsertPolicy(t *testing.T) {
 }
 
 // Validate level sizes do not exceed maxLevel (structural sanity checks)
-// Structural sanity test removed to avoid coupling to internals while implementation evolves.
+// Structural sanity test removed to avoid coupling to commons while implementation evolves.
 
 // Compare implementation vs a reference map for correctness on random ops
 func TestSkipList_RandomOpsReference(t *testing.T) {

@@ -1,26 +1,23 @@
 package memtable
 
 import (
-	"github.com/mihn1/mdb/pkg/datastructure"
-	"github.com/mihn1/mdb/pkg/internal"
+	"github.com/mihn1/mdb/pkg/common"
 )
 
 // MemTable represents the in-memory sorted structure
 type MemTable struct {
-	sl *datastructure.SkipList
+	sl *common.SkipList
 }
 
 // Create a new MemTable
-func New() *MemTable {
-	// TODO: Make maxLevel configurable
-	maxLevel := 16
+func New(opts *common.Options) *MemTable {
 	return &MemTable{
-		sl: datastructure.NewSkipList(maxLevel, &datastructure.ByteSliceComparator{}),
+		sl: common.NewSkipList(opts.MaxSkipListLevel, opts.Comparator),
 	}
 }
 
 func (m *MemTable) Put(key, value []byte) error {
-	value = append(value, byte(internal.TypeValue))
+	value = append(value, byte(common.TypeValue))
 	return m.sl.Put(key, value)
 }
 
@@ -32,7 +29,7 @@ func (m *MemTable) Get(key []byte) ([]byte, bool) {
 
 	// Get the value type embedded in the last byte
 	valType := val[len(val)-1]
-	if valType == byte(internal.TypeTombstone) {
+	if valType == byte(common.TypeTombstone) {
 		return nil, false
 	}
 
@@ -40,7 +37,7 @@ func (m *MemTable) Get(key []byte) ([]byte, bool) {
 }
 
 func (m *MemTable) Delete(key []byte) error {
-	value := []byte{byte(internal.TypeTombstone)}
+	value := []byte{byte(common.TypeTombstone)}
 	return m.sl.Put(key, value)
 }
 
@@ -50,6 +47,6 @@ func (m *MemTable) Size() uint64 {
 }
 
 // Return an iterator over the MemTable
-func (m *MemTable) Iterator() internal.Iterator {
+func (m *MemTable) Iterator() common.Iterator {
 	return m.sl.Iterator()
 }

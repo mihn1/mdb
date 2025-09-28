@@ -1,4 +1,4 @@
-package internal
+package common
 
 // Interface for traversing key-value pairs
 type Iterator interface {

@@ -5,12 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mihn1/mdb/pkg/common"
 )
 
 func TestWriterBasic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "table.sst")
-	w, err := NewWriter(path)
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	defer file.Close()
+
+	w, err := NewTableBuilder(file, common.NewDefaultOptions())
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
