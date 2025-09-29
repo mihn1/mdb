@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/mihn1/mdb/pkg/common"
@@ -23,13 +25,20 @@ func TestWriterBasic(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	// Insert a few sorted keys
-	for i := 0; i < 50; i++ {
-		k := []byte{byte(i)}
-		v := []byte("val")
-		if err := w.Add(k, v); err != nil {
-			t.Fatalf("Add: %v", err)
+	testSize := 500
+	var keys []string = make([]string, 0, testSize)
+	for i := 0; i < testSize; i++ {
+		keys = append(keys, strconv.Itoa(i))
+	}
+
+	slices.Sort(keys) // Ensure keys are sorted
+
+	for _, key := range keys {
+		if err := w.Add([]byte(key), []byte("value-"+key)); err != nil {
+			t.Fatalf("Add %s: %v", key, err)
 		}
 	}
+
 	if err := w.Finish(); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}

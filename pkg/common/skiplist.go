@@ -182,7 +182,7 @@ type skipListIterator struct {
 func newSkipListIterator(sl *SkipList) *skipListIterator {
 	return &skipListIterator{
 		sl:      sl,
-		current: sl.head,
+		current: sl.head.next[0], // Start at the first element
 	}
 }
 

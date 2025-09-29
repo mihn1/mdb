@@ -60,6 +60,9 @@ type TableBuilder struct {
 }
 
 func NewTableBuilder(file *os.File, opts *common.Options) (*TableBuilder, error) {
+	utils.AssertMsg(file != nil, "file must be provided")
+	utils.AssertMsg(opts != nil, "options must be provided")
+
 	return &TableBuilder{
 		f:                file,
 		blockCount:       0,
@@ -74,80 +77,75 @@ func NewTableBuilder(file *os.File, opts *common.Options) (*TableBuilder, error)
 }
 
 // Add appends a key/value pair to the current block; keys must be provided in sorted order.
-func (bb *TableBuilder) Add(key, value []byte) error {
-	if bb.closed {
+func (tb *TableBuilder) Add(key, value []byte) error {
+	if tb.closed {
 		return errors.New("writer closed")
 	}
 
 	// TODO: Implement adding to filter blocks
 
-	bb.dataBlock.Add(key, value)
-	bb.lastKey = key
-	// Rough size estimate for the new record inside block buffer
-	entrySize := bb.dataBlock.EstimateEntrySize(key, value)
-
+	entrySize := tb.dataBlock.EstimateEntrySize(key, value)
 	// If adding this record would exceed block size and current block not empty, flush block first
-	if bb.dataBlock.CurrentEstimateSize()+entrySize+4 >= bb.opts.DataBlockSize { // +4 if new block will add entryCount header later
-		if err := bb.flushDataBlock(); err != nil {
+	if tb.dataBlock.CurrentEstimateSize()+entrySize > tb.opts.DataBlockSize {
+		if err := tb.flushDataBlock(); err != nil {
 			return err
 		}
 	}
+
+	tb.dataBlock.Add(key, value)
+	tb.lastKey = key
 	return nil
 }
 
 // Write the current data block to file and reset the block builder
-func (bb *TableBuilder) flushDataBlock() error {
-	if bb.dataBlock.count == 0 {
+func (tb *TableBuilder) flushDataBlock() error {
+	if tb.dataBlock.count == 0 {
 		return nil // Nothing to flush
 	}
 
-	blockData := bb.dataBlock.Finish()
+	blockData := tb.dataBlock.Finish()
 	// Create a new buffer: entryCount(4 bytes) + existing blockBuf.
-	blockBytes := make([]byte, 0, 4+len(bb.dataBlock.buf))
-	blockBytes = binary.LittleEndian.AppendUint32(blockBytes, uint32(bb.dataBlock.count))
-	blockBytes = append(blockBytes, blockData...)
 	// Write data block
-	if _, err := bb.f.Write(blockBytes); err != nil {
+	if _, err := tb.f.Write(blockData); err != nil {
 		return err
 	}
 
 	// Update current block meta
-	bb.currentBlockMeta.size = uint32(len(blockBytes))
-	bb.currentBlockMeta.offset = bb.offset
-	bb.blockCount++
+	tb.currentBlockMeta.size = uint32(len(blockData))
+	tb.currentBlockMeta.offset = tb.offset
+	tb.blockCount++
 
 	// Update file offset
-	bb.offset += uint64(len(blockBytes))
-
+	tb.offset += uint64(len(blockData))
 	// Add to index block if we start a new data block
-	bb.indexBlock.Add(bb.lastKey, bb.currentBlockMeta.encode())
-	bb.dataBlock.Reset()
+	tb.indexBlock.Add(tb.lastKey, tb.currentBlockMeta.encode())
+	tb.dataBlock.Reset()
 	return nil
 }
 
 // Finalize the table: flush pending block, write index block, footer, then closes file.
-func (bb *TableBuilder) Finish() error {
+func (tb *TableBuilder) Finish() error {
 	// Flush any remaining data block
-	if err := bb.flushDataBlock(); err != nil {
+	if err := tb.flushDataBlock(); err != nil {
 		return err
 	}
-	utils.Assert(!bb.closed)
+	utils.Assert(!tb.closed)
 
 	// TODO: write filter block
 
 	// Write index block
-	indexData := bb.indexBlock.Finish()
+	indexData := tb.indexBlock.Finish()
 	indexBytes := make([]byte, 0, 4+len(indexData))
-	indexBytes = binary.LittleEndian.AppendUint32(indexBytes, uint32(bb.indexBlock.count))
+	indexBytes = binary.LittleEndian.AppendUint32(indexBytes, uint32(tb.indexBlock.count))
 	indexBytes = append(indexBytes, indexData...)
-	indexOffset, err := bb.f.Seek(0, io.SeekCurrent)
+	indexOffset, err := tb.f.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
-	if _, err := bb.f.Write(indexBytes); err != nil {
+	if _, err := tb.f.Write(indexBytes); err != nil {
 		return err
 	}
-	bb.offset += uint64(len(indexBytes))
+	tb.offset += uint64(len(indexBytes))
 	indexLength := uint64(len(indexBytes))
 
 	// Write footerBytes
@@ -156,15 +154,15 @@ func (bb *TableBuilder) Finish() error {
 	footerBytes = binary.LittleEndian.AppendUint64(footerBytes, indexLength)
 	footerBytes = binary.LittleEndian.AppendUint32(footerBytes, tableVersion)
 	footerBytes = binary.LittleEndian.AppendUint64(footerBytes, tableMagic)
-	if _, err := bb.f.Write(footerBytes); err != nil {
+	if _, err := tb.f.Write(footerBytes); err != nil {
 		return err
 	}
-	bb.offset += uint64(len(footerBytes))
+	tb.offset += uint64(len(footerBytes))
 
 	// Close file
-	if err := bb.f.Close(); err != nil {
+	if err := tb.f.Close(); err != nil {
 		return err
 	}
-	bb.closed = true
+	tb.closed = true
 	return nil
 }

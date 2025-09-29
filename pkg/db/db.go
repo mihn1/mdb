@@ -94,7 +94,7 @@ func (db *DB) flush() error {
 	// For now, just simulate the flush with a sleep or log
 	// In a real implementation, we would write the immutable memtable to an SSTable on disk
 
-	err := db.flushMemtable(db.immutable, db.path)
+	err := db.flushMemtable(db.immutable)
 	utils.AssertNoErr(err, "failed to build sstable from memtable: %v") // panic on critical error
 	if err == nil {
 		atomic.AddUint64(&db.flushes, 1)
@@ -116,28 +116,22 @@ func (db *DB) Stats() Stats {
 	}
 }
 
-func (db *DB) flushMemtable(mem *memtable.MemTable, path string) error {
+func (db *DB) flushMemtable(mem *memtable.MemTable) error {
 	// iterate over memtable
 	// write to sstable file
 	iter := mem.Iterator()
 	utils.AssertMsg(iter != nil, "memtable iterator should not be nil")
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	dir := filepath.Join(path, "tables")
+	dir := filepath.Join(db.path, "tables")
 	utils.CreateDirIfNotExist(dir)
 	seq := atomic.AddUint64(&db.globalSeq, 1) - 1
 	ts := time.Now().UnixNano()
 	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
-	file, err = os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_TRUNC, 0644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	builder, err := sstable.NewTableBuilder(file, nil)
+	builder, err := sstable.NewTableBuilder(file, db.opts)
 	if err != nil {
 		return err
 	}

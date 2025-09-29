@@ -22,8 +22,9 @@ func makeTempDir(t *testing.T) string {
 
 // openTestDB opens a DB with a very small memtable size to force flushes easily when requested.
 func openTestDB(t *testing.T, path string, memSize uint64) *db.DB {
-	t.Helper()
-	d, err := db.Open(path, common.NewDefaultOptions())
+	opts := common.NewDefaultOptions()
+	opts.MemTableSize = memSize
+	d, err := db.Open(path, opts)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
