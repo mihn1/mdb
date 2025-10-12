@@ -27,13 +27,7 @@ func (m *MemTable) Get(key []byte) ([]byte, bool) {
 		return nil, false
 	}
 
-	// Get the value type embedded in the last byte
-	valType := val[len(val)-1]
-	if valType == byte(common.TypeTombstone) {
-		return nil, false
-	}
-
-	return val[:len(val)-1], true
+	return val, true
 }
 
 func (m *MemTable) Delete(key []byte) error {

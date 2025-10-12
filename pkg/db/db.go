@@ -42,7 +42,7 @@ func Open(path string, opts *common.Options) (*DB, error) {
 }
 
 func (db *DB) Put(key, value []byte) error {
-	// Write to the MemTable for now
+	// TODO: add WAL write before memtable update
 	err := db.memtable.Put(key, value)
 	if err != nil {
 		return err
@@ -50,8 +50,6 @@ func (db *DB) Put(key, value []byte) error {
 
 	// Check if we need to flush the memtable
 	if db.shouldFlush() {
-		// In a real implementation, we would handle the immutable MemTable and WAL here
-		// For now, just simulate a flush
 		// The flushing should be done in a separate goroutine to avoid blocking
 		go db.flush()
 	}
@@ -62,10 +60,70 @@ func (db *DB) Put(key, value []byte) error {
 func (db *DB) Get(key []byte) ([]byte, error) {
 	// Get in the MemTable for now
 	value, found := db.memtable.Get(key)
-	if !found {
-		return nil, nil // Key not found
+	if found {
+		return unboxValue(value), nil
 	}
-	return value, nil
+
+	// Check immutable memtable if it exists
+	if db.immutable != nil {
+		value, found = db.immutable.Get(key)
+		if found {
+			return unboxValue(value), nil
+		}
+	}
+
+	// Keep finding in SSTables
+	tablesDir := db.getTablesDir()
+	// Check all tables sorted by newest first
+	entries, err := os.ReadDir(tablesDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.IsDir() {
+			continue
+		}
+		filePath := filepath.Join(tablesDir, entry.Name())
+		file, err := os.Open(filePath)
+		if err != nil {
+			return nil, err
+		}
+		table, err := sstable.Open(file, db.opts)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		value, err = table.Get(key)
+		file.Close()
+		if err != nil {
+			return nil, err
+		}
+		if value != nil {
+			return unboxValue(value), nil
+		}
+	}
+
+	// Not found in any SSTable
+	return nil, nil
+}
+
+func unboxValue(value []byte) []byte {
+	if len(value) == 0 {
+		return nil
+	}
+
+	// Values are stored with a type marker as the last byte
+	lastByte := value[len(value)-1]
+	if lastByte == byte(common.TypeValue) {
+		// Strip the type marker and return the actual value
+		return value[:len(value)-1]
+	} else if lastByte == byte(common.TypeTombstone) {
+		return nil // This is a tombstone (deleted key)
+	}
+
+	// If no recognized type marker, return as-is (shouldn't happen in normal operation)
+	return value
 }
 
 func (db *DB) Delete(key []byte) error {
@@ -83,23 +141,19 @@ func (db *DB) shouldFlush() bool {
 }
 
 func (db *DB) flush() error {
-	// TODO: Implement flush logic
 	db.memtableMu.Lock()
 	defer db.memtableMu.Unlock()
 
-	newMemtable := memtable.New(db.opts)
 	db.immutable = db.memtable
-	db.memtable = newMemtable
-	// Now memtable is free to be flushed to disk asynchronously
-	// For now, just simulate the flush with a sleep or log
-	// In a real implementation, we would write the immutable memtable to an SSTable on disk
+	db.memtable = memtable.New(db.opts)
 
 	err := db.flushMemtable(db.immutable)
-	utils.AssertNoErr(err, "failed to build sstable from memtable: %v") // panic on critical error
-	if err == nil {
-		atomic.AddUint64(&db.flushes, 1)
+	if err != nil {
+		return err
 	}
-	return err
+	db.immutable = nil
+	db.flushes += 1
+	return nil
 }
 
 // Stats holds simple debug counters (unstable API).
@@ -122,8 +176,7 @@ func (db *DB) flushMemtable(mem *memtable.MemTable) error {
 	iter := mem.Iterator()
 	utils.AssertMsg(iter != nil, "memtable iterator should not be nil")
 
-	dir := filepath.Join(db.path, "tables")
-	utils.CreateDirIfNotExist(dir)
+	dir := db.getTablesDir()
 	seq := atomic.AddUint64(&db.globalSeq, 1) - 1
 	ts := time.Now().UnixNano()
 	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
@@ -150,4 +203,10 @@ func (db *DB) flushMemtable(mem *memtable.MemTable) error {
 		}
 	}
 	return builder.Finish()
+}
+
+func (db *DB) getTablesDir() string {
+	dir := filepath.Join(db.path, "tables")
+	utils.CreateDirIfNotExist(dir)
+	return dir
 }
