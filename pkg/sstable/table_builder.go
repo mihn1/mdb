@@ -1,7 +1,6 @@
 package sstable
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -124,19 +123,16 @@ func (tb *TableBuilder) Finish() error {
 	// TODO: write filter block
 
 	// Write index block
-	indexData := tb.indexBlock.Finish()
-	indexBytes := make([]byte, 0, 4+len(indexData))
-	indexBytes = binary.LittleEndian.AppendUint32(indexBytes, uint32(tb.indexBlock.count))
-	indexBytes = append(indexBytes, indexData...)
+	indexBlockData := tb.indexBlock.Finish()
 	indexOffset, err := tb.f.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
-	if _, err := tb.f.Write(indexBytes); err != nil {
+	if _, err := tb.f.Write(indexBlockData); err != nil {
 		return err
 	}
-	tb.offset += uint64(len(indexBytes))
-	indexLength := uint64(len(indexBytes))
+	tb.offset += uint64(len(indexBlockData))
+	indexLength := uint64(len(indexBlockData))
 	indexBlockMeta := &blockMeta{
 		offset: uint64(indexOffset),
 		size:   indexLength,

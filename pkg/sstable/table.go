@@ -9,8 +9,8 @@ import (
 // a table represents an immutable on-disk sorted string table.
 // a table can be read by multiple goroutines concurrently without external synchronization.
 type Table struct {
-	file       *os.File
-	size       int64
+	file *os.File
+	// size       int64
 	indexBlock *Block
 	footer     *footer
 	opts       *common.Options
@@ -21,12 +21,6 @@ func Open(f *os.File, opts *common.Options) (*Table, error) {
 		file: f,
 		opts: opts,
 	}
-
-	fileStat, err := f.Stat()
-	if err != nil {
-		return t, err
-	}
-	t.size = fileStat.Size()
 
 	// Read footer
 	if err := t.readFooter(); err != nil {
@@ -59,7 +53,16 @@ func (t *Table) readFooter() error {
 	var footerSize int64 = 28
 	buf := make([]byte, footerSize)
 
-	_, err := t.file.ReadAt(buf, t.size-footerSize)
+	// Get file size to calculate footer offset
+	fileStat, err := t.file.Stat()
+	if err != nil {
+		return err
+	}
+	fileSize := fileStat.Size()
+
+	// Read footer from the end of file
+	footerOffset := fileSize - footerSize
+	_, err = t.file.ReadAt(buf, footerOffset)
 	if err != nil {
 		return err
 	}
@@ -91,6 +94,11 @@ func (t *Table) Get(key []byte) (value []byte, err error) {
 	dataReader := dataBlock.NewReader()
 	dataReader.Seek(key)
 	if dataReader.Valid() {
+		keyAt, err := dataReader.Key()
+		// Check if the key matches the target key
+		if err != nil || t.opts.Comparator.Compare(keyAt, key) != 0 {
+			return nil, err
+		}
 		return dataReader.Value()
 	}
 

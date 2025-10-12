@@ -35,11 +35,10 @@ type footer struct {
 }
 
 func (f *footer) encode() []byte {
-	buf := make([]byte, 28)
-	binary.LittleEndian.PutUint64(buf[:8], f.indexBlockMeta.offset)
-	binary.LittleEndian.PutUint64(buf[8:16], f.indexBlockMeta.size)
-	binary.LittleEndian.PutUint32(buf[16:20], f.version)
-	binary.LittleEndian.PutUint64(buf[20:], f.magicNumber)
+	buf := make([]byte, 0, 28)
+	buf = append(buf, f.indexBlockMeta.encode()...)
+	buf = binary.LittleEndian.AppendUint32(buf, f.version)
+	buf = binary.LittleEndian.AppendUint64(buf, f.magicNumber)
 	return buf
 }
 
