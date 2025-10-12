@@ -136,7 +136,16 @@ func (db *DB) flushMemtable(mem *memtable.MemTable) error {
 		return err
 	}
 	for ; iter.Valid(); iter.Next() {
-		if err := builder.Add(iter.Key(), iter.Value()); err != nil {
+		key, err := iter.Key()
+		if err != nil {
+			return err
+		}
+		value, err := iter.Value()
+		if err != nil {
+			return err
+		}
+
+		if err := builder.Add(key, value); err != nil {
 			return err
 		}
 	}

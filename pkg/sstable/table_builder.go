@@ -15,18 +15,6 @@ const (
 	tableVersion uint32 = 1                  // Specify the table format version for readers (no really needed yet)
 )
 
-type blockMeta struct {
-	size   uint32
-	offset uint64
-}
-
-func (bm *blockMeta) encode() []byte {
-	buf := make([]byte, 12)
-	binary.LittleEndian.PutUint32(buf[:4], bm.size)
-	binary.LittleEndian.PutUint64(buf[4:], bm.offset)
-	return buf
-}
-
 // TableBuilder builds an SSTable in a single pass.
 // Layout:
 //
@@ -40,7 +28,9 @@ func (bm *blockMeta) encode() []byte {
 // IndexBlock:
 //
 //	uint32 indexEntryCount
-//	  repeated: uint32 lastKeyLen | lastKey | uint64 blockOffset | uint32 blockLength
+//	  repeated: uint32 lastKeyLen | uint32 blockMetaLen | lastKey | blockMeta
+//			where blockMeta is:
+//			uint64 offset | uint64 size
 //
 // Footer (fixed 28 bytes):
 //
@@ -111,7 +101,7 @@ func (tb *TableBuilder) flushDataBlock() error {
 	}
 
 	// Update current block meta
-	tb.currentBlockMeta.size = uint32(len(blockData))
+	tb.currentBlockMeta.size = uint64(len(blockData))
 	tb.currentBlockMeta.offset = tb.offset
 	tb.blockCount++
 
@@ -147,13 +137,18 @@ func (tb *TableBuilder) Finish() error {
 	}
 	tb.offset += uint64(len(indexBytes))
 	indexLength := uint64(len(indexBytes))
+	indexBlockMeta := &blockMeta{
+		offset: uint64(indexOffset),
+		size:   indexLength,
+	}
 
 	// Write footerBytes
-	footerBytes := make([]byte, 0, 28)
-	footerBytes = binary.LittleEndian.AppendUint64(footerBytes, uint64(indexOffset))
-	footerBytes = binary.LittleEndian.AppendUint64(footerBytes, indexLength)
-	footerBytes = binary.LittleEndian.AppendUint32(footerBytes, tableVersion)
-	footerBytes = binary.LittleEndian.AppendUint64(footerBytes, tableMagic)
+	footer := &footer{
+		indexBlockMeta: indexBlockMeta,
+		version:        tableVersion,
+		magicNumber:    tableMagic,
+	}
+	footerBytes := footer.encode()
 	if _, err := tb.f.Write(footerBytes); err != nil {
 		return err
 	}

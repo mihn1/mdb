@@ -13,7 +13,7 @@ func New() *Compactor {
 }
 
 // Merge SSTables and removes obsolete entries
-func (c *Compactor) Compact(tables []*sstable.SSTable) ([]*sstable.SSTable, error) {
+func (c *Compactor) Compact(tables []*sstable.Table) ([]*sstable.Table, error) {
 	// TODO: Implement compaction
 	return nil, nil
 }

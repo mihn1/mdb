@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/mihn1/mdb/pkg/utils"
@@ -190,18 +191,18 @@ func (it *skipListIterator) Valid() bool {
 	return it.current != it.sl.tail && it.current != it.sl.head
 }
 
-func (it *skipListIterator) Key() []byte {
+func (it *skipListIterator) Key() ([]byte, error) {
 	if !it.Valid() {
-		return nil
+		return nil, errors.New("iterator not valid")
 	}
-	return it.current.key
+	return it.current.key, nil
 }
 
-func (it *skipListIterator) Value() []byte {
+func (it *skipListIterator) Value() ([]byte, error) {
 	if !it.Valid() {
-		return nil
+		return nil, errors.New("iterator not valid")
 	}
-	return it.current.value
+	return it.current.value, nil
 }
 
 func (it *skipListIterator) Next() {
