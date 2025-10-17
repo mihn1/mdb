@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/mihn1/mdb/pkg/common"
@@ -9,8 +10,8 @@ import (
 // a table represents an immutable on-disk sorted string table.
 // a table can be read by multiple goroutines concurrently without external synchronization.
 type Table struct {
-	file *os.File
-	// size       int64
+	file       *os.File
+	size       int64
 	indexBlock *Block
 	footer     *footer
 	opts       *common.Options
@@ -38,6 +39,17 @@ func Open(f *os.File, opts *common.Options) (*Table, error) {
 }
 
 func (t *Table) readBlock(blockMeta *blockMeta) (*Block, error) {
+	// Validate block metadata before attempting to allocate memory
+	if blockMeta.size > 1024*1024*10 { // 10MB sanity check
+		return nil, fmt.Errorf("block size too large: %d bytes", blockMeta.size)
+	}
+	if blockMeta.size == 0 {
+		return nil, fmt.Errorf("block size is zero")
+	}
+	if blockMeta.offset > uint64(t.size) {
+		return nil, fmt.Errorf("block offset %d beyond file size %d", blockMeta.offset, t.size)
+	}
+
 	blockData := make([]byte, blockMeta.size)
 	_, err := t.file.ReadAt(blockData, int64(blockMeta.offset))
 	if err != nil {
@@ -59,6 +71,7 @@ func (t *Table) readFooter() error {
 		return err
 	}
 	fileSize := fileStat.Size()
+	t.size = fileSize // Set the size field
 
 	// Read footer from the end of file
 	footerOffset := fileSize - footerSize

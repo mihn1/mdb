@@ -28,8 +28,6 @@ type DB struct {
 
 // Open a database at the given path
 func Open(path string, opts *common.Options) (*DB, error) {
-	// TODO: Implement database opening logic
-
 	db := &DB{
 		memtable:   memtable.New(opts),
 		immutable:  nil,
@@ -133,6 +131,13 @@ func (db *DB) Delete(key []byte) error {
 
 func (db *DB) Close() error {
 	// TODO: Implement cleanup
+	// Flush any remaining memtable
+	if db.memtable.Size() > 0 {
+		if err := db.flush(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -152,7 +157,7 @@ func (db *DB) flush() error {
 		return err
 	}
 	db.immutable = nil
-	db.flushes += 1
+	atomic.AddUint64(&db.flushes, 1)
 	return nil
 }
 

@@ -43,3 +43,7 @@ Thumbs.db
 *.log
 leveldb.code-workspace
 PROJECT_DESCRIPTION.md
+ARCHITECTURE.md
+
+# demo files
+demo/
