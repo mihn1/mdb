@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,11 +20,13 @@ type DB struct {
 	// TODO: Add fields for MemTable, WAL, SSTables, etc.
 	memtable   *memtable.MemTable
 	immutable  *memtable.MemTable
-	memtableMu sync.RWMutex // Mutex to protect memtable access during flush and swaps
-	path       string
-	opts       *common.Options
-	flushes    uint64 // number of successful flushes
-	globalSeq  uint64 // global sequence number for SSTable files
+	memtableMu sync.RWMutex // Mutex to protect memtable access during swaps
+	// flushCond  *sync.Cond   // Condition variable for flushing
+	flushMu   sync.Mutex
+	path      string
+	opts      *common.Options
+	flushes   uint64 // number of successful flushes
+	globalSeq uint64 // global sequence number for SSTable files
 }
 
 // Open a database at the given path
@@ -32,31 +35,34 @@ func Open(path string, opts *common.Options) (*DB, error) {
 		memtable:   memtable.New(opts),
 		immutable:  nil,
 		memtableMu: sync.RWMutex{},
-		path:       path,
-		opts:       opts,
+		// flushCond:  sync.NewCond(&sync.Mutex{}),
+		flushMu: sync.Mutex{},
+		path:    path,
+		opts:    opts,
 	}
 	// TODO: Load existing SSTables and WAL if any
 	return db, nil
 }
 
 func (db *DB) Put(key, value []byte) error {
+	// Lock for reading to allow concurrent reads but block during flush
+	db.memtableMu.RLock()
+	defer db.memtableMu.RUnlock()
+
 	// TODO: add WAL write before memtable update
 	err := db.memtable.Put(key, value)
 	if err != nil {
 		return err
 	}
 
-	// Check if we need to flush the memtable
-	if db.shouldFlush() {
-		// The flushing should be done in a separate goroutine to avoid blocking
-		go db.flush()
-	}
+	// Schedule a flush if needed
+	go db.maybeFlush(false)
 
 	return nil
 }
 
 func (db *DB) Get(key []byte) ([]byte, error) {
-	// Get in the MemTable for now
+	// Check memtable first
 	value, found := db.memtable.Get(key)
 	if found {
 		return unboxValue(value), nil
@@ -132,32 +138,45 @@ func (db *DB) Delete(key []byte) error {
 func (db *DB) Close() error {
 	// TODO: Implement cleanup
 	// Flush any remaining memtable
-	if db.memtable.Size() > 0 {
-		if err := db.flush(); err != nil {
-			return err
-		}
+	if db.opts.EnableDebugLogging {
+		log.Printf("Closing DB, flushing memtable if needed")
+		stat := db.Stats()
+		log.Printf("Before Close: Flushes %d memtable at %d", stat.Flushes, stat.MemTableSize)
+	}
+
+	if err := db.maybeFlush(true); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (db *DB) shouldFlush() bool {
-	return db.memtable.Size() >= db.opts.MemTableSize
-}
-
-func (db *DB) flush() error {
+func (db *DB) maybeFlush(force bool) error {
+	db.flushMu.Lock()
+	defer db.flushMu.Unlock()
 	db.memtableMu.Lock()
-	defer db.memtableMu.Unlock()
+
+	size := db.memtable.Size()
+	if size == 0 || (size < db.opts.MemTableSize && !force) {
+		db.memtableMu.Unlock()
+		return nil
+	}
+
+	if db.opts.EnableDebugLogging {
+		stat := db.Stats()
+		log.Printf("Flushes %d memtable at %d", stat.Flushes, stat.MemTableSize)
+	}
 
 	db.immutable = db.memtable
 	db.memtable = memtable.New(db.opts)
+	db.memtableMu.Unlock() // Unlock memtable for reading after swapping
 
 	err := db.flushMemtable(db.immutable)
 	if err != nil {
 		return err
 	}
 	db.immutable = nil
-	atomic.AddUint64(&db.flushes, 1)
+	db.flushes++
 	return nil
 }
 

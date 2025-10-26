@@ -84,6 +84,10 @@ func (t *Table) readFooter() error {
 }
 
 func (t *Table) Get(key []byte) (value []byte, err error) {
+	if t.indexBlock == nil || len(t.indexBlock.data) == 0 {
+		return nil, nil
+	}
+
 	var indexReader common.Iterator = t.indexBlock.NewReader()
 	indexReader.Seek(key)
 	if !indexReader.Valid() {

@@ -166,8 +166,8 @@ func (sl *SkipList) FindNode(key []byte) *node {
 
 // Return the approximate size in bytes
 func (sl *SkipList) Size() uint64 {
-	sl.mu.RLock()
-	defer sl.mu.RUnlock()
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
 	return sl.size
 }
 

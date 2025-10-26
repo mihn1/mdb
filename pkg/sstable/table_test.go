@@ -2,6 +2,7 @@ package sstable
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -360,95 +361,125 @@ func TestBlockReader(t *testing.T) {
 }
 
 func TestTableReaderEdgeCases(t *testing.T) {
-	// Test empty table
 	dir := t.TempDir()
-	path := filepath.Join(dir, "test_empty.sst")
 
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create file: %v", err)
-	}
+	// Test 1: Creating empty table should fail
+	t.Run("EmptyTableCreationFails", func(t *testing.T) {
+		path := filepath.Join(dir, "test_empty.sst")
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+		defer file.Close()
 
-	w, err := NewTableBuilder(file, common.NewDefaultOptions())
-	if err != nil {
-		t.Fatalf("NewTableBuilder: %v", err)
-	}
+		w, err := NewTableBuilder(file, common.NewDefaultOptions())
+		if err != nil {
+			t.Fatalf("NewTableBuilder: %v", err)
+		}
 
-	// Finish without adding any data
-	if err := w.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	file.Close()
+		// Finish without adding any data - should error
+		err = w.Finish()
+		if err == nil {
+			t.Fatal("Expected error when finishing empty table, got nil")
+		}
+		if err != ErrEmptyTable {
+			t.Fatalf("Expected ErrEmptyTable, got: %v", err)
+		}
+	})
 
-	// Test reading empty table
-	file, err = os.Open(path)
-	if err != nil {
-		t.Fatalf("open file: %v", err)
-	}
-	defer file.Close()
+	// Test 2: Single entry table (valid edge case)
+	t.Run("SingleEntryTable", func(t *testing.T) {
+		path := filepath.Join(dir, "test_single.sst")
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
 
-	table, err := Open(file, common.NewDefaultOptions())
-	if err != nil {
-		t.Fatalf("Open empty table: %v", err)
-	}
+		w, err := NewTableBuilder(file, common.NewDefaultOptions())
+		if err != nil {
+			t.Fatalf("NewTableBuilder: %v", err)
+		}
 
-	// Test Get on empty table
-	value, err := table.Get([]byte("any_key"))
-	if err != nil {
-		t.Fatalf("Get on empty table: %v", err)
-	}
-	if value != nil {
-		t.Fatalf("Get on empty table: got %q, want nil", string(value))
-	}
+		if err := w.Add([]byte("single_key"), []byte("single_value")); err != nil {
+			t.Fatalf("Add single entry: %v", err)
+		}
 
-	// Test single entry table
-	path = filepath.Join(dir, "test_single.sst")
-	file, err = os.Create(path)
-	if err != nil {
-		t.Fatalf("create file: %v", err)
-	}
+		if err := w.Finish(); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		file.Close()
 
-	w, err = NewTableBuilder(file, common.NewDefaultOptions())
-	if err != nil {
-		t.Fatalf("NewTableBuilder: %v", err)
-	}
+		// Test reading
+		file, err = os.Open(path)
+		if err != nil {
+			t.Fatalf("open file: %v", err)
+		}
+		defer file.Close()
 
-	if err := w.Add([]byte("single_key"), []byte("single_value")); err != nil {
-		t.Fatalf("Add single entry: %v", err)
-	}
+		table, err := Open(file, common.NewDefaultOptions())
+		if err != nil {
+			t.Fatalf("Open table: %v", err)
+		}
 
-	if err := w.Finish(); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	file.Close()
+		value, err := table.Get([]byte("single_key"))
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if string(value) != "single_value" {
+			t.Fatalf("got %q, want 'single_value'", string(value))
+		}
+	})
 
-	// Test reading single entry table
-	file, err = os.Open(path)
-	if err != nil {
-		t.Fatalf("open file: %v", err)
-	}
-	defer file.Close()
+	// Test 3: Table with only tombstones (might become empty after compaction)
+	t.Run("AllTombstonesTable", func(t *testing.T) {
+		path := filepath.Join(dir, "test_tombstones.sst")
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
 
-	table, err = Open(file, common.NewDefaultOptions())
-	if err != nil {
-		t.Fatalf("Open single entry table: %v", err)
-	}
+		w, err := NewTableBuilder(file, common.NewDefaultOptions())
+		if err != nil {
+			t.Fatalf("NewTableBuilder: %v", err)
+		}
 
-	// Test Get existing key
-	value, err = table.Get([]byte("single_key"))
-	if err != nil {
-		t.Fatalf("Get single key: %v", err)
-	}
-	if string(value) != "single_value" {
-		t.Fatalf("Get single key: got %q, want 'single_value'", string(value))
-	}
+		// Add tombstones (deleted keys)
+		for i := 0; i < 5; i++ {
+			key := []byte(fmt.Sprintf("deleted_%d", i))
+			tombstone := append([]byte{}, byte(common.TypeTombstone))
+			if err := w.Add(key, tombstone); err != nil {
+				t.Fatalf("Add tombstone: %v", err)
+			}
+		}
 
-	// Test Get non-existing key
-	value, err = table.Get([]byte("not_found"))
-	if err != nil {
-		t.Fatalf("Get non-existing key: %v", err)
-	}
-	if value != nil {
-		t.Fatalf("Get non-existing key: got %q, want nil", string(value))
-	}
+		if err := w.Finish(); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		file.Close()
+
+		// This should work - tombstones are valid data
+		file, err = os.Open(path)
+		if err != nil {
+			t.Fatalf("open file: %v", err)
+		}
+		defer file.Close()
+
+		table, err := Open(file, common.NewDefaultOptions())
+		if err != nil {
+			t.Fatalf("Open table: %v", err)
+		}
+
+		// Getting a tombstone key should return the tombstone marker
+		// It's the caller's (DB layer) responsibility to interpret it
+		value, err := table.Get([]byte("deleted_0"))
+		if err != nil {
+			t.Fatalf("Get tombstone: %v", err)
+		}
+		if len(value) != 1 {
+			t.Fatalf("Expected tombstone marker (1 byte), got %d bytes", len(value))
+		}
+		if value[0] != byte(common.TypeTombstone) {
+			t.Fatalf("Expected tombstone marker (%d), got: %d", byte(common.TypeTombstone), value[0])
+		}
+	})
 }

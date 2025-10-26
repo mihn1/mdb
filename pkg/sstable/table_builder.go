@@ -120,6 +120,10 @@ func (tb *TableBuilder) Finish() error {
 	}
 	utils.Assert(!tb.closed)
 
+	if tb.blockCount == 0 {
+		return ErrEmptyTable
+	}
+
 	// TODO: write filter block
 
 	// Write index block
