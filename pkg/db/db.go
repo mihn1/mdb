@@ -157,7 +157,9 @@ func (db *DB) maybeFlush(force bool) error {
 	db.memtableMu.Lock()
 
 	size := db.memtable.Size()
-	if size == 0 || (size < db.opts.MemTableSize && !force) {
+	if db.immutable != nil || // Another flush is in progress
+		size == 0 ||
+		(size < db.opts.MemTableSize && !force) {
 		db.memtableMu.Unlock()
 		return nil
 	}
@@ -172,10 +174,12 @@ func (db *DB) maybeFlush(force bool) error {
 	db.memtableMu.Unlock() // Unlock memtable for reading after swapping
 
 	err := db.flushMemtable(db.immutable)
+	db.immutable = nil
+
 	if err != nil {
 		return err
 	}
-	db.immutable = nil
+
 	db.flushes++
 	return nil
 }
