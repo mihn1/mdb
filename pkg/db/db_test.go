@@ -38,7 +38,7 @@ func waitForFlush(t *testing.T, d *db.DB, target uint64, timeout time.Duration) 
 		if d.Stats().Flushes >= target {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for flush count %d (have %d)", target, d.Stats().Flushes)
 }
