@@ -21,12 +21,12 @@ type DB struct {
 	memtable   *memtable.MemTable
 	immutable  *memtable.MemTable
 	memtableMu sync.RWMutex // Mutex to protect memtable access during swaps
-	// flushCond  *sync.Cond   // Condition variable for flushing
-	flushMu   sync.Mutex
-	path      string
-	opts      *common.Options
-	flushes   uint64 // number of successful flushes
-	globalSeq uint64 // global sequence number for SSTable files
+	flushCond  *sync.Cond   // Condition variable for coordinating flushes
+	path       string
+	opts       *common.Options
+	flushes    uint64 // number of successful flushes
+	globalSeq  uint64 // global sequence number for SSTable files
+	flushErr   error  // last flush error encountered
 }
 
 // Open a database at the given path
@@ -35,47 +35,48 @@ func Open(path string, opts *common.Options) (*DB, error) {
 		memtable:   memtable.New(opts),
 		immutable:  nil,
 		memtableMu: sync.RWMutex{},
-		// flushCond:  sync.NewCond(&sync.Mutex{}),
-		flushMu: sync.Mutex{},
-		path:    path,
-		opts:    opts,
+		path:       path,
+		opts:       opts,
 	}
+	db.flushCond = sync.NewCond(&db.memtableMu)
 	// TODO: Load existing SSTables and WAL if any
 	return db, nil
 }
 
 func (db *DB) Put(key, value []byte) error {
-	// Lock for reading to allow concurrent reads but block during flush
-	db.memtableMu.RLock()
-	defer db.memtableMu.RUnlock()
-
+	db.memtableMu.Lock()
 	// TODO: add WAL write before memtable update
 	err := db.memtable.Put(key, value)
+	db.memtableMu.Unlock()
 	if err != nil {
 		return err
 	}
 
-	// Schedule a flush if needed
-	go db.maybeFlush(false)
-
-	return nil
+	return db.maybeFlush(false)
 }
 
 func (db *DB) Get(key []byte) ([]byte, error) {
+	db.memtableMu.RLock()
+	// Capture memtable reference for safe access after unlock
+	mem := db.memtable
+	imm := db.immutable
+	db.memtableMu.RUnlock()
+
 	// Check memtable first
-	value, found := db.memtable.Get(key)
+	value, found := mem.Get(key)
 	if found {
 		return unboxValue(value), nil
 	}
 
 	// Check immutable memtable if it exists
-	if db.immutable != nil {
-		value, found = db.immutable.Get(key)
+	if imm != nil {
+		value, found = imm.Get(key)
 		if found {
 			return unboxValue(value), nil
 		}
 	}
 
+	// No need to lock when reading from SSTables
 	// Keep finding in SSTables
 	tablesDir := db.getTablesDir()
 	// Check all tables sorted by newest first
@@ -86,6 +87,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".sst" {
 			continue
 		}
 		filePath := filepath.Join(tablesDir, entry.Name())
@@ -131,8 +135,14 @@ func unboxValue(value []byte) []byte {
 }
 
 func (db *DB) Delete(key []byte) error {
-	// Delete in the MemTable for now
-	return db.memtable.Delete(key)
+	db.memtableMu.Lock()
+	value := []byte{byte(common.TypeTombstone)}
+	err := db.memtable.Put(key, value)
+	db.memtableMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return db.maybeFlush(false)
 }
 
 func (db *DB) Close() error {
@@ -144,43 +154,53 @@ func (db *DB) Close() error {
 		log.Printf("Before Close: Flushes %d memtable at %d", stat.Flushes, stat.MemTableSize)
 	}
 
-	if err := db.maybeFlush(true); err != nil {
-		return err
-	}
-
-	return nil
+	return db.maybeFlush(true)
 }
 
 func (db *DB) maybeFlush(force bool) error {
-	db.flushMu.Lock()
-	defer db.flushMu.Unlock()
 	db.memtableMu.Lock()
 
+	for db.immutable != nil {
+		if db.flushErr != nil {
+			err := db.flushErr
+			db.memtableMu.Unlock()
+			return err
+		}
+		db.flushCond.Wait()
+	}
+
 	size := db.memtable.Size()
-	if db.immutable != nil || // Another flush is in progress
-		size == 0 ||
-		(size < db.opts.MemTableSize && !force) {
+	if size == 0 || (size < db.opts.MemTableSize && !force) {
 		db.memtableMu.Unlock()
 		return nil
 	}
 
 	if db.opts.EnableDebugLogging {
-		stat := db.Stats()
-		log.Printf("Flushes %d memtable at %d", stat.Flushes, stat.MemTableSize)
+		log.Printf("Flushing memtable: current size %d", size)
 	}
 
-	db.immutable = db.memtable
+	imm := db.memtable
+	db.immutable = imm
 	db.memtable = memtable.New(db.opts)
-	db.memtableMu.Unlock() // Unlock memtable for reading after swapping
+	db.memtableMu.Unlock()
 
-	err := db.flushMemtable(db.immutable)
-	db.immutable = nil
+	// Release the lock while flushing since the cond var already protects flushing
+	err := db.flushMemtable(imm)
 
+	db.memtableMu.Lock()
 	if err != nil {
+		db.flushErr = err
+		db.flushCond.Broadcast()
+		db.memtableMu.Unlock()
 		return err
 	}
 
-	db.flushes++
+	db.immutable = nil
+	db.flushErr = nil
+	atomic.AddUint64(&db.flushes, 1)
+	db.flushCond.Broadcast()
+	db.memtableMu.Unlock()
+
 	return nil
 }
 
@@ -192,8 +212,11 @@ type Stats struct {
 
 // Stats returns current debug counters.
 func (db *DB) Stats() Stats {
+	db.memtableMu.RLock()
+	size := db.memtable.Size()
+	db.memtableMu.RUnlock()
 	return Stats{
-		MemTableSize: db.memtable.Size(),
+		MemTableSize: size,
 		Flushes:      atomic.LoadUint64(&db.flushes),
 	}
 }
@@ -208,29 +231,42 @@ func (db *DB) flushMemtable(mem *memtable.MemTable) error {
 	seq := atomic.AddUint64(&db.globalSeq, 1) - 1
 	ts := time.Now().UnixNano()
 	filePath := filepath.Join(dir, fmt.Sprintf("sstable-%d-%d-%d.sst", 0, seq, ts))
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	tmpPath := filePath + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
 	builder, err := sstable.NewTableBuilder(file, db.opts)
 	if err != nil {
+		file.Close()
+		os.Remove(tmpPath)
 		return err
 	}
 	for ; iter.Valid(); iter.Next() {
 		key, err := iter.Key()
 		if err != nil {
+			file.Close()
+			os.Remove(tmpPath)
 			return err
 		}
 		value, err := iter.Value()
 		if err != nil {
+			file.Close()
+			os.Remove(tmpPath)
 			return err
 		}
 
 		if err := builder.Add(key, value); err != nil {
+			file.Close()
+			os.Remove(tmpPath)
 			return err
 		}
 	}
-	return builder.Finish()
+	if err := builder.Finish(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, filePath)
 }
 
 func (db *DB) getTablesDir() string {

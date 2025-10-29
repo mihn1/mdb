@@ -17,7 +17,6 @@ func New(opts *common.Options) *MemTable {
 }
 
 func (m *MemTable) Put(key, value []byte) error {
-	value = append(value, byte(common.TypeValue))
 	return m.sl.Put(key, value)
 }
 
@@ -28,11 +27,6 @@ func (m *MemTable) Get(key []byte) ([]byte, bool) {
 	}
 
 	return val, true
-}
-
-func (m *MemTable) Delete(key []byte) error {
-	value := []byte{byte(common.TypeTombstone)}
-	return m.sl.Put(key, value)
 }
 
 // Return the approximate size in bytes

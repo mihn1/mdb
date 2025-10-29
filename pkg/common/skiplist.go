@@ -2,7 +2,6 @@ package common
 
 import (
 	"errors"
-	"sync"
 
 	"github.com/mihn1/mdb/pkg/utils"
 )
@@ -12,7 +11,6 @@ type SkipList struct {
 	tail     *node
 	maxLevel int
 	size     uint64 // Number of bytes for keys and values estimated in the skiplist
-	mu       sync.RWMutex
 	cmp      Comparator
 	_preds   []*node // Reusable slice for path tracking when insertion to avoid allocations
 }
@@ -44,16 +42,12 @@ func NewSkipList(maxLevel int, cmp Comparator) *SkipList {
 		head:     head,
 		tail:     tail,
 		maxLevel: maxLevel,
-		mu:       sync.RWMutex{},
 		cmp:      cmp,
 		_preds:   make([]*node, maxLevel),
 	}
 }
 
 func (sl *SkipList) Get(key []byte) ([]byte, bool) {
-	sl.mu.RLock()
-	defer sl.mu.RUnlock()
-
 	foundNode := sl.FindNode(key)
 	if foundNode != nil {
 		return foundNode.value, true
@@ -63,9 +57,6 @@ func (sl *SkipList) Get(key []byte) ([]byte, bool) {
 }
 
 func (sl *SkipList) Put(key []byte, value []byte) error {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-
 	cur := sl.head
 	// Traverse from the highest node to the lowest
 	for lvl := sl.maxLevel - 1; lvl >= 0; lvl-- {
@@ -118,9 +109,6 @@ func (sl *SkipList) Put(key []byte, value []byte) error {
 }
 
 func (sl *SkipList) Delete(key []byte) (bool, error) {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
-
 	node := sl.FindNode(key)
 	if node != nil {
 		level := len(node.next)
@@ -166,8 +154,6 @@ func (sl *SkipList) FindNode(key []byte) *node {
 
 // Return the approximate size in bytes
 func (sl *SkipList) Size() uint64 {
-	sl.mu.Lock()
-	defer sl.mu.Unlock()
 	return sl.size
 }
 
