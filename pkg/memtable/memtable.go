@@ -34,7 +34,7 @@ func (m *MemTable) Size() uint64 {
 	return m.sl.Size()
 }
 
-// Return an iterator over the MemTable
-func (m *MemTable) Iterator() common.Reader {
-	return m.sl.Iterator()
+// Return a reader over the MemTable
+func (m *MemTable) Reader() common.Reader {
+	return m.sl.Reader()
 }

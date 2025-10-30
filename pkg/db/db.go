@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,11 +19,12 @@ import (
 
 // DB represents the main database interface
 type tableMeta struct {
-	FileName  string
-	Size      int64
-	Level     int
-	Seq       uint64
-	CreatedAt time.Time
+	FileName   string
+	Size       int64
+	Level      int
+	Seq        uint64
+	CreatedAt  time.Time
+	compacting bool
 }
 
 type DB struct {
@@ -37,9 +39,10 @@ type DB struct {
 	globalSeq  uint64 // global sequence number for SSTable files
 	flushErr   error  // last flush error encountered
 
-	tablesMu  sync.RWMutex
-	tables    []*tableMeta
-	compactor *Compactor
+	compactionScheduled bool
+	tablesMu            sync.RWMutex
+	tables              []*tableMeta
+	compactor           *Compactor
 }
 
 // Open a database at the given path
@@ -93,10 +96,13 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		}
 	}
 
-	tables := db.snapshotTables()
-	for _, meta := range tables {
+	tablesSnapshot := db.snapshotTables()
+	for _, meta := range tablesSnapshot {
 		value, err := db.getFromTable(meta, key)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
 			return nil, err
 		}
 		if value != nil {
@@ -199,7 +205,8 @@ func (db *DB) maybeFlush(force bool) error {
 	if err := db.registerTable(meta); err != nil {
 		return err
 	}
-	return db.maybeRunCompaction()
+	go db.maybeScheduleCompaction()
+	return nil
 }
 
 // Stats holds simple debug counters (unstable API).
@@ -222,8 +229,8 @@ func (db *DB) Stats() Stats {
 func (db *DB) flushMemtable(mem *memtable.MemTable) (*tableMeta, error) {
 	// iterate over memtable
 	// write to sstable file
-	iter := mem.Iterator()
-	utils.AssertMsg(iter != nil, "memtable iterator should not be nil")
+	reader := mem.Reader()
+	utils.AssertMsg(reader != nil, "memtable reader should not be nil")
 
 	dir := db.getTablesDir()
 	seq := atomic.AddUint64(&db.globalSeq, 1) - 1
@@ -240,14 +247,14 @@ func (db *DB) flushMemtable(mem *memtable.MemTable) (*tableMeta, error) {
 		os.Remove(tmpPath)
 		return nil, err
 	}
-	for ; iter.Valid(); iter.Next() {
-		key, err := iter.Key()
+	for ; reader.Valid(); reader.Next() {
+		key, err := reader.Key()
 		if err != nil {
 			file.Close()
 			os.Remove(tmpPath)
 			return nil, err
 		}
-		value, err := iter.Value()
+		value, err := reader.Value()
 		if err != nil {
 			file.Close()
 			os.Remove(tmpPath)
@@ -300,36 +307,98 @@ func (db *DB) registerTable(meta *tableMeta) error {
 		meta.Size = info.Size()
 	}
 	db.tablesMu.Lock()
-	db.tables = append(db.tables, meta)
+	db.addAndTidyTables(meta)
 	db.tablesMu.Unlock()
 	return nil
 }
 
-func (db *DB) maybeRunCompaction() error {
-	if db.compactor == nil {
-		return nil
-	}
-	return db.compactor.MaybeCompact(db)
+// Requires db.tablesMu to be held by caller
+func (db *DB) addAndTidyTables(metas ...*tableMeta) {
+	db.tables = append(db.tables, metas...)
+	db.tidyTables()
+}
+
+// Requires db.tablesMu to be held by caller
+func (db *DB) tidyTables() {
+	sort.Slice(db.tables, func(i, j int) bool {
+		if db.tables[i].Seq == db.tables[j].Seq {
+			if db.tables[i].Level == db.tables[j].Level {
+				return db.tables[i].CreatedAt.After(db.tables[j].CreatedAt)
+			}
+			return db.tables[i].Level < db.tables[j].Level
+		}
+		return db.tables[i].Seq > db.tables[j].Seq
+	})
 }
 
 func (db *DB) snapshotTables() []*tableMeta {
 	db.tablesMu.RLock()
-	defer db.tablesMu.RUnlock()
 	if len(db.tables) == 0 {
+		db.tablesMu.RUnlock()
 		return nil
 	}
 	snapshot := make([]*tableMeta, len(db.tables))
 	copy(snapshot, db.tables)
-	sort.Slice(snapshot, func(i, j int) bool {
-		if snapshot[i].Seq == snapshot[j].Seq {
-			if snapshot[i].Level == snapshot[j].Level {
-				return snapshot[i].CreatedAt.After(snapshot[j].CreatedAt)
-			}
-			return snapshot[i].Level < snapshot[j].Level
-		}
-		return snapshot[i].Seq > snapshot[j].Seq
-	})
+	db.tablesMu.RUnlock()
 	return snapshot
+}
+
+// Requires db.tablesMu to be held by caller
+func (db *DB) markCompacting(metas []*tableMeta) {
+	for _, meta := range metas {
+		meta.compacting = true
+	}
+}
+
+// Requires db.tablesMu to be held by caller
+func (db *DB) releaseCompacting(metas []*tableMeta) {
+	for _, meta := range metas {
+		meta.compacting = false
+	}
+}
+
+// Requires db.tablesMu to be held by caller
+func (db *DB) removeTables(metas []*tableMeta) {
+	if len(metas) == 0 {
+		return
+	}
+	set := make(map[*tableMeta]struct{}, len(metas))
+	for _, meta := range metas {
+		meta.compacting = false
+		set[meta] = struct{}{}
+	}
+	filtered := db.tables[:0]
+	for _, meta := range db.tables {
+		if _, found := set[meta]; found {
+			continue
+		}
+		filtered = append(filtered, meta)
+	}
+	db.tables = filtered
+}
+
+func (db *DB) maybeScheduleCompaction() error {
+	if db.compactor == nil {
+		return nil
+	}
+	db.tablesMu.Lock()
+	if db.compactionScheduled {
+		db.tablesMu.Unlock()
+		return nil
+	}
+	db.compactionScheduled = true
+	db.tablesMu.Unlock()
+
+	go func() {
+		if err := db.compactor.Compact(db); err != nil {
+			log.Printf("Compaction error: %v", err)
+		}
+		db.tablesMu.Lock()
+		db.compactionScheduled = false
+		db.tablesMu.Unlock()
+	}()
+
+	return nil
 }
 
 func (db *DB) loadExistingTables() error {
@@ -362,7 +431,7 @@ func (db *DB) loadExistingTables() error {
 		return nil
 	}
 	db.tablesMu.Lock()
-	db.tables = append(db.tables, metas...)
+	db.addAndTidyTables(metas...)
 	db.tablesMu.Unlock()
 	return nil
 }

@@ -24,7 +24,8 @@ func NewCompactor(opts *common.Options) *Compactor {
 	return &Compactor{opts: opts}
 }
 
-func (c *Compactor) MaybeCompact(db *DB) error {
+func (c *Compactor) Compact(db *DB) error {
+	// Keep picking and executing compaction plans until no tier needs compaction
 	for {
 		plan := c.pickCompactionTarget(db)
 		if plan == nil {
@@ -32,7 +33,7 @@ func (c *Compactor) MaybeCompact(db *DB) error {
 		}
 		if err := c.executeCompaction(db, plan); err != nil {
 			db.tablesMu.Lock()
-			db.tables = append(db.tables, plan.metas...)
+			db.releaseCompacting(plan.metas)
 			db.tablesMu.Unlock()
 			return err
 		}
@@ -44,6 +45,8 @@ type compactionPlan struct {
 	metas []*tableMeta
 }
 
+// Pick compaction targets based on size-tiered strategy
+// and remove them from the DB's table list.
 func (c *Compactor) pickCompactionTarget(db *DB) *compactionPlan {
 	db.tablesMu.Lock()
 	defer db.tablesMu.Unlock()
@@ -52,6 +55,9 @@ func (c *Compactor) pickCompactionTarget(db *DB) *compactionPlan {
 	}
 	levelGroups := make(map[int][]*tableMeta)
 	for _, meta := range db.tables {
+		if meta.compacting {
+			continue
+		}
 		levelGroups[meta.Level] = append(levelGroups[meta.Level], meta)
 	}
 	levels := make([]int, 0, len(levelGroups))
@@ -72,18 +78,7 @@ func (c *Compactor) pickCompactionTarget(db *DB) *compactionPlan {
 		})
 		selected := make([]*tableMeta, c.opts.CompactionFanIn)
 		copy(selected, metas[:c.opts.CompactionFanIn])
-		selectedSet := make(map[*tableMeta]struct{}, len(selected))
-		for _, meta := range selected {
-			selectedSet[meta] = struct{}{}
-		}
-		filtered := db.tables[:0]
-		for _, meta := range db.tables {
-			if _, found := selectedSet[meta]; found {
-				continue
-			}
-			filtered = append(filtered, meta)
-		}
-		db.tables = filtered
+		db.markCompacting(selected)
 		return &compactionPlan{level: lvl, metas: selected}
 	}
 	return nil
@@ -124,13 +119,18 @@ func (c *Compactor) executeCompaction(db *DB, plan *compactionPlan) error {
 	if err != nil {
 		return err
 	}
-	for _, meta := range plan.metas {
-		_ = os.Remove(filepath.Join(tablesDir, meta.FileName))
+	paths := make([]string, len(plan.metas))
+	for i, meta := range plan.metas {
+		paths[i] = filepath.Join(tablesDir, meta.FileName)
 	}
+	db.tablesMu.Lock()
+	db.removeTables(plan.metas)
 	if newMeta != nil {
-		db.tablesMu.Lock()
-		db.tables = append(db.tables, newMeta)
-		db.tablesMu.Unlock()
+		db.addAndTidyTables(newMeta)
+	}
+	db.tablesMu.Unlock()
+	for _, path := range paths {
+		_ = os.Remove(path)
 	}
 	return nil
 }
