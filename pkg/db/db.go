@@ -96,18 +96,28 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		}
 	}
 
+	const maxSnapshotRetries = 2
 	tablesSnapshot := db.snapshotTables()
-	for _, meta := range tablesSnapshot {
-		value, err := db.getFromTable(meta, key)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				break
+	for retry := 0; retry <= maxSnapshotRetries; retry++ {
+		retrySnapshot := false
+		for _, meta := range tablesSnapshot {
+			value, err := db.getFromTable(meta, key)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					// Table disappeared during an in-flight compaction; refresh snapshot and retry.
+					retrySnapshot = true
+					break
+				}
+				return nil, err
 			}
-			return nil, err
+			if value != nil {
+				return unboxValue(value), nil
+			}
 		}
-		if value != nil {
-			return unboxValue(value), nil
+		if !retrySnapshot || retry == maxSnapshotRetries {
+			break
 		}
+		tablesSnapshot = db.snapshotTables()
 	}
 
 	// Not found in any SSTable
