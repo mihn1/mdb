@@ -157,7 +157,7 @@ func (sl *SkipList) Size() uint64 {
 	return sl.size
 }
 
-func (sl *SkipList) Iterator() Iterator {
+func (sl *SkipList) Iterator() Reader {
 	return newSkipListIterator(sl)
 }
 

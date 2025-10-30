@@ -1,10 +1,12 @@
 ### Write Path
+- Skiplist implementation (done)
+    - To be improved: use arena for memory allocation
 - Block builder (done)
+    - To be improved: restart points for faster seeks in blocks 
 - Table builder (done)
     - Fix table flusing issue (done)
     - Consider use non-busy waiting for writes
 - Compaction
 - WAL
-- Restart points for faster seeks in blocks
 - Bloom filter
 - Block cache

@@ -88,7 +88,7 @@ func (t *Table) Get(key []byte) (value []byte, err error) {
 		return nil, nil
 	}
 
-	var indexReader common.Iterator = t.indexBlock.NewReader()
+	var indexReader common.Reader = t.indexBlock.NewReader()
 	indexReader.Seek(key)
 	if !indexReader.Valid() {
 		return nil, nil
@@ -120,4 +120,123 @@ func (t *Table) Get(key []byte) (value []byte, err error) {
 	}
 
 	return nil, nil
+}
+
+// NewReader returns an iterator over all key/value pairs stored in the table.
+func (t *Table) NewReader() common.Reader {
+	indexIter := t.indexBlock.NewReader()
+	it := &tableIterator{
+		table:     t,
+		indexIter: indexIter,
+	}
+	it.SeekToFirst()
+	return it
+}
+
+type tableIterator struct {
+	table     *Table
+	indexIter common.Reader
+	blockIter common.Reader
+	err       error
+}
+
+func (it *tableIterator) Valid() bool {
+	if it.err != nil || it.blockIter == nil {
+		return false
+	}
+	return it.blockIter.Valid()
+}
+
+func (it *tableIterator) Key() ([]byte, error) {
+	if it.err != nil {
+		return nil, it.err
+	}
+	if it.blockIter == nil || !it.blockIter.Valid() {
+		return nil, ErrInvalidBlockReader
+	}
+	return it.blockIter.Key()
+}
+
+func (it *tableIterator) Value() ([]byte, error) {
+	if it.err != nil {
+		return nil, it.err
+	}
+	if it.blockIter == nil || !it.blockIter.Valid() {
+		return nil, ErrInvalidBlockReader
+	}
+	return it.blockIter.Value()
+}
+
+func (it *tableIterator) Next() {
+	if it.err != nil || it.blockIter == nil {
+		return
+	}
+	it.blockIter.Next()
+	if it.blockIter.Valid() {
+		return
+	}
+	it.indexIter.Next()
+	it.loadCurrentBlock()
+}
+
+func (it *tableIterator) Seek(target []byte) {
+	it.err = nil
+	it.indexIter.SeekToFirst()
+	cmp := it.table.opts.Comparator
+	for it.indexIter.Valid() {
+		keyBytes, err := it.indexIter.Key()
+		if err != nil {
+			it.err = err
+			it.blockIter = nil
+			return
+		}
+		if cmp.Compare(keyBytes, target) >= 0 {
+			it.loadCurrentBlock()
+			if it.err != nil {
+				return
+			}
+			if it.blockIter != nil {
+				it.blockIter.Seek(target)
+				if it.blockIter.Valid() {
+					return
+				}
+			}
+		}
+		it.indexIter.Next()
+	}
+	it.blockIter = nil
+}
+
+func (it *tableIterator) SeekToFirst() {
+	it.err = nil
+	it.indexIter.SeekToFirst()
+	it.loadCurrentBlock()
+}
+
+func (it *tableIterator) loadCurrentBlock() {
+	if !it.indexIter.Valid() {
+		it.blockIter = nil
+		return
+	}
+	valueBytes, err := it.indexIter.Value()
+	if err != nil {
+		it.err = err
+		it.blockIter = nil
+		return
+	}
+	meta, err := decodeBlockMeta(valueBytes)
+	if err != nil {
+		it.err = err
+		it.blockIter = nil
+		return
+	}
+	block, err := it.table.readBlock(meta)
+	if err != nil {
+		it.err = err
+		it.blockIter = nil
+		return
+	}
+	reader := block.NewReader()
+	reader.SeekToFirst()
+	it.blockIter = reader
 }

@@ -6,6 +6,9 @@ type Options struct {
 	MemTableSize       uint64 // Maximum size of MemTable before flushing to disk
 	DataBlockSize      int    // Target size for data blocks in SSTables
 	EnableDebugLogging bool   // Enable detailed logging for debugging
+
+	// Compaction options
+	CompactionFanIn int // Number of files to compact together per size tier
 }
 
 func NewDefaultOptions() *Options {
@@ -15,6 +18,9 @@ func NewDefaultOptions() *Options {
 		DataBlockSize:      4 * 1024,        // 4KB
 		Comparator:         &ByteSliceComparator{},
 		EnableDebugLogging: false,
+
+		// Compaction options
+		CompactionFanIn: 4,
 	}
 }
 
@@ -25,5 +31,8 @@ func NewDebugOptions() *Options {
 		DataBlockSize:      4 * 1024,  // 4KB
 		Comparator:         &ByteSliceComparator{},
 		EnableDebugLogging: true,
+
+		// Compaction options
+		CompactionFanIn: 4,
 	}
 }
