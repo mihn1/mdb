@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -38,6 +39,8 @@ type DB struct {
 	flushes    uint64 // number of successful flushes
 	globalSeq  uint64 // global sequence number for SSTable files
 	flushErr   error  // last flush error encountered
+	wal        *WAL
+	recovering bool
 
 	compactionScheduled bool
 	tablesMu            sync.RWMutex
@@ -45,8 +48,13 @@ type DB struct {
 	compactor           *Compactor
 }
 
+const walFileName = "wal.log"
+
 // Open a database at the given path
 func Open(path string, opts *common.Options) (*DB, error) {
+	if err := utils.CreateDirIfNotExist(path); err != nil {
+		return nil, err
+	}
 	db := &DB{
 		memtable:   memtable.New(opts),
 		immutable:  nil,
@@ -56,17 +64,40 @@ func Open(path string, opts *common.Options) (*DB, error) {
 	}
 	db.flushCond = sync.NewCond(&db.memtableMu)
 	db.compactor = NewCompactor(db.opts)
-	if err := db.loadExistingTables(); err != nil {
+	wal, err := openWAL(filepath.Join(path, walFileName))
+	if err != nil {
 		return nil, err
 	}
-	// TODO: Load existing SSTables and WAL if any
+	db.wal = wal
+	if err := db.loadExistingTables(); err != nil {
+		wal.Close()
+		return nil, err
+	}
+	db.recovering = true
+	if err := db.recoverFromWAL(); err != nil {
+		wal.Close()
+		return nil, err
+	}
+	db.recovering = false
+	if err := db.refreshWALFromMemtable(); err != nil {
+		wal.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
 func (db *DB) Put(key, value []byte) error {
+	valueWithMarker := make([]byte, len(value)+1)
+	copy(valueWithMarker, value)
+	valueWithMarker[len(value)] = byte(common.TypeValue)
+	keyCopy := append([]byte(nil), key...)
+
 	db.memtableMu.Lock()
-	// TODO: add WAL write before memtable update
-	err := db.memtable.Put(key, value)
+	if err := db.appendToWAL(key, value, EntryTypePut); err != nil {
+		db.memtableMu.Unlock()
+		return err
+	}
+	err := db.memtable.Put(keyCopy, valueWithMarker)
 	db.memtableMu.Unlock()
 	if err != nil {
 		return err
@@ -143,9 +174,15 @@ func unboxValue(value []byte) []byte {
 }
 
 func (db *DB) Delete(key []byte) error {
-	db.memtableMu.Lock()
 	value := []byte{byte(common.TypeTombstone)}
-	err := db.memtable.Put(key, value)
+	keyCopy := append([]byte(nil), key...)
+
+	db.memtableMu.Lock()
+	if err := db.appendToWAL(key, nil, EntryTypeDelete); err != nil {
+		db.memtableMu.Unlock()
+		return err
+	}
+	err := db.memtable.Put(keyCopy, value)
 	db.memtableMu.Unlock()
 	if err != nil {
 		return err
@@ -162,7 +199,16 @@ func (db *DB) Close() error {
 		log.Printf("Before Close: Flushes %d memtable at %d", stat.Flushes, stat.MemTableSize)
 	}
 
-	return db.maybeFlush(true)
+	err := db.maybeFlush(true)
+	if db.wal != nil {
+		if syncErr := db.wal.Sync(); err == nil && syncErr != nil {
+			err = syncErr
+		}
+		if closeErr := db.wal.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 func (db *DB) maybeFlush(force bool) error {
@@ -209,13 +255,17 @@ func (db *DB) maybeFlush(force bool) error {
 	db.flushCond.Broadcast()
 	db.memtableMu.Unlock()
 
-	if meta == nil {
-		return nil
-	}
 	if err := db.registerTable(meta); err != nil {
 		return err
 	}
-	go db.maybeScheduleCompaction()
+	if !db.recovering {
+		if err := db.refreshWALFromMemtable(); err != nil {
+			return err
+		}
+	}
+	if !db.recovering {
+		go db.maybeScheduleCompaction()
+	}
 	return nil
 }
 
@@ -478,4 +528,115 @@ func (db *DB) getFromTable(meta *tableMeta, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	return table.Get(key)
+}
+
+// Require memtableMu to be held by caller
+func (db *DB) appendToWAL(key, value []byte, typ EntryType) error {
+	if db.wal == nil {
+		return nil
+	}
+	entry := &WALEntry{Type: typ, Key: key}
+	if typ == EntryTypePut {
+		entry.Value = value
+	}
+	return db.wal.Append(entry)
+}
+
+func (db *DB) refreshWALFromMemtable() error {
+	if db.wal == nil {
+		return nil
+	}
+	db.memtableMu.Lock()
+	entries, err := db.collectMemtableEntriesLocked()
+	if err != nil {
+		db.memtableMu.Unlock()
+		return err
+	}
+	err = db.wal.Replace(entries)
+	db.memtableMu.Unlock()
+	return err
+}
+
+func (db *DB) collectMemtableEntriesLocked() ([]*WALEntry, error) {
+	if db.memtable == nil {
+		return nil, nil
+	}
+	reader := db.memtable.Reader()
+	if reader == nil {
+		return nil, nil
+	}
+	entries := make([]*WALEntry, 0)
+	for ; reader.Valid(); reader.Next() {
+		key, err := reader.Key()
+		if err != nil {
+			return nil, err
+		}
+		value, err := reader.Value()
+		if err != nil {
+			return nil, err
+		}
+		entry := &WALEntry{
+			Key: append([]byte(nil), key...),
+		}
+		if len(value) == 1 && value[0] == byte(common.TypeTombstone) {
+			entry.Type = EntryTypeDelete
+		} else {
+			entry.Type = EntryTypePut
+			unboxed := append([]byte(nil), value...)
+			if len(unboxed) > 0 && unboxed[len(unboxed)-1] == byte(common.TypeValue) {
+				unboxed = unboxed[:len(unboxed)-1]
+			}
+			entry.Value = unboxed
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (db *DB) recoverFromWAL() error {
+	walPath := filepath.Join(db.path, walFileName)
+	file, err := os.Open(walPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	reader := NewReader(file)
+	for {
+		entry, err := reader.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+		var value []byte
+		switch entry.Type {
+		case EntryTypePut:
+			value = make([]byte, len(entry.Value)+1)
+			copy(value, entry.Value)
+			value[len(entry.Value)] = byte(common.TypeValue)
+		case EntryTypeDelete:
+			value = []byte{byte(common.TypeTombstone)}
+		default:
+			return fmt.Errorf("db: unknown wal entry type %d", entry.Type)
+		}
+		keyCopy := append([]byte(nil), entry.Key...)
+		db.memtableMu.Lock()
+		if err := db.memtable.Put(keyCopy, value); err != nil {
+			db.memtableMu.Unlock()
+			return err
+		}
+		size := db.memtable.Size()
+		db.memtableMu.Unlock()
+		if size >= db.opts.MemTableSize {
+			if err := db.maybeFlush(false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
