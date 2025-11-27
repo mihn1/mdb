@@ -6,6 +6,9 @@ type Options struct {
 	MemTableSize       uint64 // Maximum size of MemTable before flushing to disk
 	DataBlockSize      int    // Target size for data blocks in SSTables
 	EnableDebugLogging bool   // Enable detailed logging for debugging
+	EnableBloomFilter  bool   // Toggle SSTable bloom filters
+	BloomFilterBits    int    // Bit count per data-block filter
+	BloomFilterHashes  int    // Hash probes per key
 
 	// Compaction options
 	CompactionFanIn int // Number of files to compact together per size tier
@@ -18,6 +21,9 @@ func NewDefaultOptions() *Options {
 		DataBlockSize:      4 * 1024,        // 4KB
 		Comparator:         &ByteSliceComparator{},
 		EnableDebugLogging: false,
+		EnableBloomFilter:  true,
+		BloomFilterBits:    2048,
+		BloomFilterHashes:  3,
 
 		// Compaction options
 		CompactionFanIn: 4,
@@ -31,6 +37,9 @@ func NewDebugOptions() *Options {
 		DataBlockSize:      4 * 1024,  // 4KB
 		Comparator:         &ByteSliceComparator{},
 		EnableDebugLogging: true,
+		EnableBloomFilter:  true,
+		BloomFilterBits:    1024,
+		BloomFilterHashes:  3,
 
 		// Compaction options
 		CompactionFanIn: 4,

@@ -1,7 +1,6 @@
 package sstable
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,26 +47,25 @@ func TestWriterBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
-	if len(data) < 28 {
+	if len(data) < footerEncodedLength {
 		t.Fatalf("file too small: %d", len(data))
 	}
-	// Footer is last 28 bytes
-	footer := data[len(data)-28:]
-	magic := binary.LittleEndian.Uint64(footer[20:28])
-	if magic != tableMagic {
-		t.Fatalf("bad magic: got %x want %x", magic, tableMagic)
+	footerBytes := data[len(data)-footerEncodedLength:]
+	decoded, err := decodeFooter(footerBytes)
+	if err != nil {
+		t.Fatalf("decode footer: %v", err)
 	}
-	version := binary.LittleEndian.Uint32(footer[16:20])
-	if version != tableVersion {
-		t.Fatalf("bad version: got %d want %d", version, tableVersion)
+	if decoded.magicNumber != tableMagic {
+		t.Fatalf("bad magic: got %x want %x", decoded.magicNumber, tableMagic)
 	}
-	indexOffset := binary.LittleEndian.Uint64(footer[0:8])
-	indexLength := binary.LittleEndian.Uint64(footer[8:16])
-	if indexOffset == 0 || indexLength == 0 {
-		t.Fatalf("unexpected index metadata offset=%d length=%d", indexOffset, indexLength)
+	if decoded.version != tableVersion {
+		t.Fatalf("bad version: got %d want %d", decoded.version, tableVersion)
 	}
-	if int(indexOffset+indexLength) > len(data)-28 {
-		t.Fatalf("index extends beyond file")
+	if decoded.indexBlockMeta == nil || decoded.indexBlockMeta.offset == 0 {
+		t.Fatalf("missing index block metadata")
+	}
+	if decoded.filterBlockMeta == nil || decoded.filterBlockMeta.size == 0 {
+		t.Fatalf("expected filter block metadata when bloom filters enabled")
 	}
 }
 
@@ -482,4 +480,24 @@ func TestTableReaderEdgeCases(t *testing.T) {
 			t.Fatalf("Expected tombstone marker (%d), got: %d", byte(common.TypeTombstone), value[0])
 		}
 	})
+}
+
+func TestFilterBlockEncoding(t *testing.T) {
+	builder := newFilterBlockBuilder(128, 2)
+	builder.AddBlock([][]byte{[]byte("alpha"), []byte("beta")})
+	builder.AddBlock(nil)
+	data := builder.Finish()
+	reader, err := newFilterBlockReader(data)
+	if err != nil {
+		t.Fatalf("newFilterBlockReader: %v", err)
+	}
+	if !reader.mayContain(0, []byte("alpha")) {
+		t.Fatalf("expected filter 0 to contain alpha key")
+	}
+	if reader.mayContain(1, []byte("zeta")) {
+		t.Fatalf("empty filter should not match arbitrary key")
+	}
+	if reader.mayContain(5, []byte("alpha")) != true {
+		t.Fatalf("out-of-range filters should default to true to avoid false negatives")
+	}
 }

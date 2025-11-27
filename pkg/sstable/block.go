@@ -17,21 +17,24 @@ func NewBlock(data []byte, opts *common.Options) *Block {
 }
 
 type BlockReader struct {
-	block   *Block
-	current int // Current read position
+	block      *Block
+	current    int // Current read position
+	entryIndex int
 }
 
 func (b *Block) NewReader() *BlockReader {
-	return &BlockReader{block: b, current: 0}
+	return &BlockReader{block: b, current: 0, entryIndex: 0}
 }
 
 func (b *BlockReader) SeekToFirst() {
 	b.current = 0
+	b.entryIndex = 0
 }
 
 func (b *BlockReader) Seek(target []byte) {
 	// Linear search all keys in the block for now
 	b.current = 0
+	b.entryIndex = 0
 	for b.Valid() {
 		keyLen := binary.LittleEndian.Uint32(b.block.data[b.current : b.current+4])
 		key := b.block.data[b.current+8 : b.current+8+int(keyLen)]
@@ -41,6 +44,7 @@ func (b *BlockReader) Seek(target []byte) {
 		}
 		valLen := binary.LittleEndian.Uint32(b.block.data[b.current+4 : b.current+8])
 		b.current += 8 + int(keyLen) + int(valLen)
+		b.entryIndex++
 	}
 	// If we reach here, target is greater than all keys, so set to invalid position
 	b.current = len(b.block.data)
@@ -51,6 +55,7 @@ func (b *BlockReader) Next() {
 		keyLen := binary.LittleEndian.Uint32(b.block.data[b.current : b.current+4])
 		valLen := binary.LittleEndian.Uint32(b.block.data[b.current+4 : b.current+8])
 		b.current += 8 + int(keyLen) + int(valLen)
+		b.entryIndex++
 	}
 }
 
@@ -75,4 +80,9 @@ func (b *BlockReader) Value() ([]byte, error) {
 
 func (b *BlockReader) Valid() bool {
 	return b.current < len(b.block.data)
+}
+
+// EntryIndex returns the ordinal position of the current entry within the block.
+func (b *BlockReader) EntryIndex() int {
+	return b.entryIndex
 }

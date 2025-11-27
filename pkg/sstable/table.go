@@ -15,6 +15,7 @@ type Table struct {
 	indexBlock *Block
 	footer     *footer
 	opts       *common.Options
+	filter     *filterBlockReader
 }
 
 func Open(f *os.File, opts *common.Options) (*Table, error) {
@@ -35,10 +36,33 @@ func Open(f *os.File, opts *common.Options) (*Table, error) {
 		return t, err
 	}
 	t.indexBlock = indexBlock
+
+	if meta := t.footer.filterBlockMeta; meta != nil && meta.size > 0 {
+		data, err := t.readRaw(meta)
+		if err != nil {
+			return t, err
+		}
+		filterReader, err := newFilterBlockReader(data)
+		if err != nil {
+			return t, err
+		}
+		t.filter = filterReader
+	}
 	return t, nil
 }
 
 func (t *Table) readBlock(blockMeta *blockMeta) (*Block, error) {
+	data, err := t.readRaw(blockMeta)
+	if err != nil {
+		return nil, err
+	}
+	return &Block{
+		data: data,
+		opts: t.opts,
+	}, nil
+}
+
+func (t *Table) readRaw(blockMeta *blockMeta) ([]byte, error) {
 	// Validate block metadata before attempting to allocate memory
 	if blockMeta.size > 1024*1024*10 { // 10MB sanity check
 		return nil, fmt.Errorf("block size too large: %d bytes", blockMeta.size)
@@ -55,14 +79,11 @@ func (t *Table) readBlock(blockMeta *blockMeta) (*Block, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Block{
-		data: blockData,
-		opts: t.opts,
-	}, nil
+	return blockData, nil
 }
 
 func (t *Table) readFooter() error {
-	var footerSize int64 = 28
+	var footerSize int64 = footerEncodedLength
 	buf := make([]byte, footerSize)
 
 	// Get file size to calculate footer offset
@@ -91,6 +112,13 @@ func (t *Table) Get(key []byte) (value []byte, err error) {
 	var indexReader common.Reader = t.indexBlock.NewReader()
 	indexReader.Seek(key)
 	if !indexReader.Valid() {
+		return nil, nil
+	}
+	blockIndex := -1
+	if br, ok := indexReader.(*BlockReader); ok {
+		blockIndex = br.EntryIndex()
+	}
+	if t.filter != nil && !t.filter.mayContain(blockIndex, key) {
 		return nil, nil
 	}
 

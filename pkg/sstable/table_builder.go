@@ -10,14 +10,14 @@ import (
 )
 
 const (
-	tableMagic   uint64 = 0x4D44535441424C45 // "MDSTABLE" (custom magic) - Simple checksum to ensure file integrity
-	tableVersion uint32 = 1                  // Specify the table format version for readers (no really needed yet)
+	tableMagic   uint64 = 0x4D44535441424C45 // "MDSTABLE" (custom magic)
+	tableVersion uint32 = 2                  // Bumped after introducing bloom filter metadata
 )
 
 // TableBuilder builds an SSTable in a single pass.
 // Layout:
 //
-//	[DataBlock]* [IndexBlock] [Footer]
+//	[DataBlock]* [FilterBlock?] [IndexBlock] [Footer]
 //
 // DataBlock:
 //
@@ -31,9 +31,11 @@ const (
 //			where blockMeta is:
 //			uint64 offset | uint64 size
 //
-// Footer (fixed 28 bytes):
+// FilterBlock (optional, serialized via filter_block.go) stores one bloom filter per data block.
 //
-//	uint64 indexOffset | uint64 indexLength | uint32 version | uint64 magic
+// Footer (fixed 44 bytes):
+//
+//	uint64 filterOffset | uint64 filterLength | uint64 indexOffset | uint64 indexLength | uint32 version | uint64 magic
 //
 // All integers little-endian.
 type TableBuilder struct {
@@ -46,11 +48,18 @@ type TableBuilder struct {
 	offset           uint64     // Current file offset
 	closed           bool
 	opts             *common.Options
+	filterBuilder    *filterBlockBuilder
+	blockKeys        [][]byte
 }
 
 func NewTableBuilder(file *os.File, opts *common.Options) (*TableBuilder, error) {
 	utils.AssertMsg(file != nil, "file must be provided")
 	utils.AssertMsg(opts != nil, "options must be provided")
+
+	var filterBuilder *filterBlockBuilder
+	if opts.EnableBloomFilter {
+		filterBuilder = newFilterBlockBuilder(opts.BloomFilterBits, opts.BloomFilterHashes)
+	}
 
 	return &TableBuilder{
 		f:                file,
@@ -62,6 +71,8 @@ func NewTableBuilder(file *os.File, opts *common.Options) (*TableBuilder, error)
 		lastKey:          nil,
 		closed:           false,
 		opts:             opts,
+		filterBuilder:    filterBuilder,
+		blockKeys:        make([][]byte, 0, 64),
 	}, nil
 }
 
@@ -70,8 +81,6 @@ func (tb *TableBuilder) Add(key, value []byte) error {
 	if tb.closed {
 		return errors.New("writer closed")
 	}
-
-	// TODO: Implement adding to filter blocks
 
 	entrySize := tb.dataBlock.EstimateEntrySize(key, value)
 	// If adding this record would exceed block size and current block not empty, flush block first
@@ -83,6 +92,10 @@ func (tb *TableBuilder) Add(key, value []byte) error {
 
 	tb.dataBlock.Add(key, value)
 	tb.lastKey = key
+	if tb.filterBuilder != nil {
+		keyCopy := append([]byte(nil), key...)
+		tb.blockKeys = append(tb.blockKeys, keyCopy)
+	}
 	return nil
 }
 
@@ -109,7 +122,21 @@ func (tb *TableBuilder) flushDataBlock() error {
 	// Add to index block if we start a new data block
 	tb.indexBlock.Add(tb.lastKey, tb.currentBlockMeta.encode())
 	tb.dataBlock.Reset()
+	tb.flushFilterForBlock()
 	return nil
+}
+
+func (tb *TableBuilder) flushFilterForBlock() {
+	if tb.filterBuilder == nil {
+		tb.blockKeys = tb.blockKeys[:0]
+		return
+	}
+	tb.filterBuilder.AddBlock(tb.blockKeys)
+	// Reuse backing array without reallocating
+	for i := range tb.blockKeys {
+		tb.blockKeys[i] = nil
+	}
+	tb.blockKeys = tb.blockKeys[:0]
 }
 
 // Finalize the table: flush pending block, write index block, footer, then closes file.
@@ -124,7 +151,24 @@ func (tb *TableBuilder) Finish() error {
 		return ErrEmptyTable
 	}
 
-	// TODO: write filter block
+	var filterBlockMeta *blockMeta
+	if tb.filterBuilder != nil {
+		filterData := tb.filterBuilder.Finish()
+		if len(filterData) > 0 {
+			offset, err := tb.f.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return err
+			}
+			if _, err := tb.f.Write(filterData); err != nil {
+				return err
+			}
+			tb.offset += uint64(len(filterData))
+			filterBlockMeta = &blockMeta{
+				offset: uint64(offset),
+				size:   uint64(len(filterData)),
+			}
+		}
+	}
 
 	// Write index block
 	indexBlockData := tb.indexBlock.Finish()
@@ -143,12 +187,13 @@ func (tb *TableBuilder) Finish() error {
 	}
 
 	// Write footerBytes
-	footer := &footer{
-		indexBlockMeta: indexBlockMeta,
-		version:        tableVersion,
-		magicNumber:    tableMagic,
+	foot := &footer{
+		filterBlockMeta: filterBlockMeta,
+		indexBlockMeta:  indexBlockMeta,
+		version:         tableVersion,
+		magicNumber:     tableMagic,
 	}
-	footerBytes := footer.encode()
+	footerBytes := foot.encode()
 	if _, err := tb.f.Write(footerBytes); err != nil {
 		return err
 	}
