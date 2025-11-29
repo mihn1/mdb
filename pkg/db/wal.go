@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/mihn1/mdb/pkg/common"
 )
 
 var (
@@ -20,6 +22,7 @@ type WAL struct {
 	mu     sync.Mutex
 	file   *os.File
 	writer *bufio.Writer
+	opts   *common.Options
 }
 
 // WALEntry represents a log entry.
@@ -37,7 +40,7 @@ const (
 	EntryTypeDelete
 )
 
-func openWAL(path string) (*WAL, error) {
+func openWAL(path string, opts *common.Options) (*WAL, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
@@ -45,6 +48,7 @@ func openWAL(path string) (*WAL, error) {
 	return &WAL{
 		file:   file,
 		writer: bufio.NewWriter(file),
+		opts:   opts,
 	}, nil
 }
 
@@ -64,7 +68,8 @@ func (w *WAL) Append(entry *WALEntry) error {
 	if _, err := w.writer.Write(encoded); err != nil {
 		return err
 	}
-	return w.writer.Flush()
+
+	return nil
 }
 
 // Replace truncates the WAL and writes the provided entries as the new contents.

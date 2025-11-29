@@ -14,7 +14,7 @@ func TestWALAppendReplaceAndRead(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, walFileName)
 
-	wal, err := openWAL(walPath)
+	wal, err := openWAL(walPath, nil)
 	if err != nil {
 		t.Fatalf("openWAL: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestWALRecoveryAppliesPendingEntries(t *testing.T) {
 	dir := t.TempDir()
 	walPath := filepath.Join(dir, walFileName)
 
-	wal, err := openWAL(walPath)
+	wal, err := openWAL(walPath, nil)
 	if err != nil {
 		t.Fatalf("openWAL: %v", err)
 	}

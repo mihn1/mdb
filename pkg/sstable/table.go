@@ -62,6 +62,16 @@ func (t *Table) readBlock(blockMeta *blockMeta) (*Block, error) {
 	}, nil
 }
 
+// Close releases resources held by the table.
+func (t *Table) Close() error {
+	if t == nil || t.file == nil {
+		return nil
+	}
+	err := t.file.Close()
+	t.file = nil
+	return err
+}
+
 func (t *Table) readRaw(blockMeta *blockMeta) ([]byte, error) {
 	// Validate block metadata before attempting to allocate memory
 	if blockMeta.size > 1024*1024*10 { // 10MB sanity check

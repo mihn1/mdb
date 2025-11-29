@@ -46,6 +46,7 @@ type DB struct {
 	tablesMu            sync.RWMutex
 	tables              []*tableMeta
 	compactor           *Compactor
+	tableCache          *tableCache
 }
 
 const walFileName = "wal.log"
@@ -64,7 +65,8 @@ func Open(path string, opts *common.Options) (*DB, error) {
 	}
 	db.flushCond = sync.NewCond(&db.memtableMu)
 	db.compactor = NewCompactor(db.opts)
-	wal, err := openWAL(filepath.Join(path, walFileName))
+	db.tableCache = newTableCache(db.getTablesDir(), db.opts)
+	wal, err := openWAL(filepath.Join(path, walFileName), db.opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,11 +94,11 @@ func (db *DB) Put(key, value []byte) error {
 	valueWithMarker[len(value)] = byte(common.TypeValue)
 	keyCopy := append([]byte(nil), key...)
 
-	db.memtableMu.Lock()
 	if err := db.appendToWAL(key, value, EntryTypePut); err != nil {
-		db.memtableMu.Unlock()
 		return err
 	}
+
+	db.memtableMu.Lock()
 	err := db.memtable.Put(keyCopy, valueWithMarker)
 	db.memtableMu.Unlock()
 	if err != nil {
@@ -177,11 +179,11 @@ func (db *DB) Delete(key []byte) error {
 	value := []byte{byte(common.TypeTombstone)}
 	keyCopy := append([]byte(nil), key...)
 
-	db.memtableMu.Lock()
 	if err := db.appendToWAL(key, nil, EntryTypeDelete); err != nil {
-		db.memtableMu.Unlock()
 		return err
 	}
+
+	db.memtableMu.Lock()
 	err := db.memtable.Put(keyCopy, value)
 	db.memtableMu.Unlock()
 	if err != nil {
@@ -208,13 +210,19 @@ func (db *DB) Close() error {
 			err = closeErr
 		}
 	}
+	if db.tableCache != nil {
+		db.tableCache.Close()
+	}
 	return err
 }
 
 func (db *DB) maybeFlush(force bool) error {
 	db.memtableMu.Lock()
-
 	for db.immutable != nil {
+		if !force && db.memtable.Size() < db.opts.MemTableSize {
+			db.memtableMu.Unlock()
+			return nil
+		}
 		if db.flushErr != nil {
 			err := db.flushErr
 			db.memtableMu.Unlock()
@@ -222,7 +230,6 @@ func (db *DB) maybeFlush(force bool) error {
 		}
 		db.flushCond.Wait()
 	}
-
 	size := db.memtable.Size()
 	if size == 0 || (size < db.opts.MemTableSize && !force) {
 		db.memtableMu.Unlock()
@@ -426,6 +433,9 @@ func (db *DB) removeTables(metas []*tableMeta) {
 	for _, meta := range metas {
 		meta.compacting = false
 		set[meta] = struct{}{}
+		if db.tableCache != nil {
+			db.tableCache.Evict(meta.FileName)
+		}
 	}
 	filtered := db.tables[:0]
 	for _, meta := range db.tables {
@@ -517,20 +527,17 @@ func parseTableMeta(dir, fileName string) (*tableMeta, error) {
 }
 
 func (db *DB) getFromTable(meta *tableMeta, key []byte) ([]byte, error) {
-	path := filepath.Join(db.getTablesDir(), meta.FileName)
-	file, err := os.Open(path)
+	if db.tableCache == nil {
+		return nil, fmt.Errorf("table cache not initialized")
+	}
+	table, release, err := db.tableCache.Get(meta)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	table, err := sstable.Open(file, db.opts)
-	if err != nil {
-		return nil, err
-	}
+	defer release()
 	return table.Get(key)
 }
 
-// Require memtableMu to be held by caller
 func (db *DB) appendToWAL(key, value []byte, typ EntryType) error {
 	if db.wal == nil {
 		return nil
@@ -539,7 +546,13 @@ func (db *DB) appendToWAL(key, value []byte, typ EntryType) error {
 	if typ == EntryTypePut {
 		entry.Value = value
 	}
-	return db.wal.Append(entry)
+	if err := db.wal.Append(entry); err != nil {
+		return err
+	}
+	if db.opts != nil && db.opts.SyncWrites {
+		return db.wal.Sync()
+	}
+	return nil
 }
 
 func (db *DB) refreshWALFromMemtable() error {

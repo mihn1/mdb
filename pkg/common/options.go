@@ -9,6 +9,7 @@ type Options struct {
 	EnableBloomFilter  bool   // Toggle SSTable bloom filters
 	BloomFilterBits    int    // Bit count per data-block filter
 	BloomFilterHashes  int    // Hash probes per key
+	SyncWrites         bool   // Force WAL fsync after every write
 
 	// Compaction options
 	CompactionFanIn int // Number of files to compact together per size tier
@@ -24,6 +25,7 @@ func NewDefaultOptions() *Options {
 		EnableBloomFilter:  true,
 		BloomFilterBits:    2048,
 		BloomFilterHashes:  3,
+		SyncWrites:         false,
 
 		// Compaction options
 		CompactionFanIn: 4,
@@ -40,6 +42,7 @@ func NewDebugOptions() *Options {
 		EnableBloomFilter:  true,
 		BloomFilterBits:    1024,
 		BloomFilterHashes:  3,
+		SyncWrites:         false,
 
 		// Compaction options
 		CompactionFanIn: 4,

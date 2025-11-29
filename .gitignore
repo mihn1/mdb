@@ -46,6 +46,6 @@ PROJECT_DESCRIPTION.md
 ARCHITECTURE.md
 
 # demo files
-demo/
-demo*/
+demo/db/
+db/
 TODO.md

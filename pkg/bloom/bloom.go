@@ -5,7 +5,7 @@ import "errors"
 const (
 	defaultBitsPerFilter = 2048
 	defaultHashFuncs     = 3
-	bloomSeed            = uint32(0xbc9f1d34)
+	bloomSeed            = uint32(0xbc8f1d14)
 )
 
 // Filter is a simple Bloom filter backed by a fixed-size bit array.
