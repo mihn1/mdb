@@ -167,14 +167,8 @@ func (r *WALReader) Next() (*WALEntry, error) {
 		if err == io.EOF && n == 0 {
 			return nil, io.EOF
 		}
-		if err == io.ErrUnexpectedEOF {
-			if n == 0 {
-				return nil, io.EOF
-			}
-			return nil, errCorruptWAL
-		}
-		if err == io.EOF && n > 0 {
-			return nil, errCorruptWAL
+		if errors.Is(err, io.ErrUnexpectedEOF) || (err == io.EOF && n > 0) {
+			return nil, io.EOF
 		}
 		return nil, err
 	}
@@ -186,8 +180,8 @@ func (r *WALReader) Next() (*WALEntry, error) {
 	key := make([]byte, keyLen)
 	if keyLen > 0 {
 		if _, err := io.ReadFull(r.r, key); err != nil {
-			if err == io.ErrUnexpectedEOF {
-				return nil, errCorruptWAL
+			if errors.Is(err, io.ErrUnexpectedEOF) || err == io.EOF {
+				return nil, io.EOF
 			}
 			return nil, err
 		}
@@ -196,8 +190,8 @@ func (r *WALReader) Next() (*WALEntry, error) {
 	value := make([]byte, valueLen)
 	if valueLen > 0 {
 		if _, err := io.ReadFull(r.r, value); err != nil {
-			if err == io.ErrUnexpectedEOF {
-				return nil, errCorruptWAL
+			if errors.Is(err, io.ErrUnexpectedEOF) || err == io.EOF {
+				return nil, io.EOF
 			}
 			return nil, err
 		}
